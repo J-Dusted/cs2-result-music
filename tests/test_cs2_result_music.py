@@ -37,6 +37,7 @@ def gsi_payload(
     player_name: str | None = None,
     mvps: int | None = None,
     bomb_state: str | None = None,
+    round_bomb: str | None = None,
     bomb_countdown: float | None = None,
     phase_countdowns: dict | None = None,
 ) -> dict:
@@ -61,6 +62,9 @@ def gsi_payload(
             payload["round"]["phase"] = round_phase
         if round_winner is not None:
             payload["round"]["win_team"] = round_winner
+    if round_bomb is not None:
+        payload.setdefault("round", {})
+        payload["round"]["bomb"] = round_bomb
     if player_name is not None:
         payload["player"]["name"] = player_name
     if mvps is not None:
@@ -646,6 +650,133 @@ class GameStateTests(unittest.TestCase):
         )
         now[0] = 100.0
         self.assertEqual(state.poll(), [])
+
+    def test_bomb_fallback_uses_round_bomb_field_for_live_player(self) -> None:
+        # A live player never receives the top-level bomb component, so
+        # round.bomb is the signal that actually drives the fallback timer.
+        now = [0.0]
+        state = app.GameState(
+            "round",
+            bomb10_lead_seconds=10,
+            bomb10_fallback_plant_seconds=30,
+            clock=lambda: now[0],
+        )
+        self.assertEqual(
+            state.observe(
+                gsi_payload(
+                    phase="live",
+                    round_number=3,
+                    round_phase="live",
+                    round_bomb="planted",
+                    timestamp=1,
+                )
+            ),
+            [],
+        )
+        now[0] = 29.9
+        self.assertEqual(state.poll(), [])
+        now[0] = 30.0
+        self.assertEqual(event_names(state.poll()), ["bomb10"])
+        self.assertEqual(state.poll(), [])
+
+    def test_bomb_fallback_cancels_when_round_ends_before_firing(self) -> None:
+        now = [0.0]
+        state = app.GameState("round", clock=lambda: now[0])
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=3,
+                round_phase="live",
+                round_bomb="planted",
+                timestamp=1,
+            )
+        )
+        # Defused before the 30 second fallback elapses: the round-end snapshot
+        # must cancel the pending timer so no music fires afterwards.
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=4,
+                round_phase="over",
+                round_winner="CT",
+                round_bomb="defused",
+                timestamp=2,
+            )
+        )
+        now[0] = 40.0
+        self.assertEqual(state.poll(), [])
+
+    def test_bomb_timer_survives_an_in_progress_defuse(self) -> None:
+        now = [0.0]
+        state = app.GameState(
+            "round",
+            bomb10_lead_seconds=10,
+            bomb10_fallback_plant_seconds=30,
+            clock=lambda: now[0],
+        )
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=3,
+                round_phase="live",
+                round_bomb="planted",
+                timestamp=1,
+            )
+        )
+        now[0] = 20.0
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=3,
+                round_phase="live",
+                round_bomb="defusing",
+                timestamp=2,
+            )
+        )
+        # The defuse fails and the bomb is armed again; the original deadline
+        # must survive instead of restarting 30 seconds from now.
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=3,
+                round_phase="live",
+                round_bomb="planted",
+                timestamp=3,
+            )
+        )
+        now[0] = 30.0
+        self.assertEqual(event_names(state.poll()), ["bomb10"])
+
+    def test_defuse_after_bomb10_still_reports_round_result(self) -> None:
+        now = [0.0]
+        state = app.GameState(
+            "round",
+            bomb10_lead_seconds=10,
+            bomb10_fallback_plant_seconds=30,
+            clock=lambda: now[0],
+        )
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=3,
+                round_phase="live",
+                round_bomb="planted",
+                timestamp=1,
+            )
+        )
+        now[0] = 30.0
+        self.assertEqual(event_names(state.poll()), ["bomb10"])
+        events = state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=4,
+                round_phase="over",
+                round_winner="CT",
+                round_bomb="defused",
+                timestamp=2,
+            )
+        )
+        self.assertEqual(event_names(events), ["win"])
 
 
 class LibraryTests(unittest.TestCase):

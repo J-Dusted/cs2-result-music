@@ -452,7 +452,12 @@ class GameState:
             active = True
         elif state in {"carried", "dropped", "defused", "exploded"}:
             active = False
-        elif round_state == "planted":
+        elif round_state in {"planted", "defusing"}:
+            # round.bomb is the only signal a live player receives (the
+            # top-level bomb component is spectator-only). "defusing" means a
+            # defuse is in progress, so the bomb is still armed: keep the
+            # pending countdown instead of abandoning it in case the defuse
+            # fails and the round still ends in an explosion.
             active = True
         if str(round_data.get("phase", "")).strip().lower() == "over":
             active = False
