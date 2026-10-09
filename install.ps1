@@ -16,6 +16,7 @@ $includeSource = Join-Path $root "deploy\cs2_result_music.txt"
 $includeDestination = Join-Path $apoRoot "config\cs2_result_music.txt"
 $vstDirectory = Join-Path $apoRoot "VSTPlugins"
 $stateDirectory = "C:\ProgramData\CS2ResultAudio"
+$musicRoot = Join-Path $root "music"
 $beginMarker = "# CS2 Result Music begin"
 $endMarker = "# CS2 Result Music end"
 
@@ -40,6 +41,10 @@ New-Item -ItemType Directory -Force -Path $vstDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $stateDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $includeDestination) |
     Out-Null
+foreach ($eventDirectory in @("win", "lose", "start", "mvp", "bomb10")) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $musicRoot $eventDirectory) |
+        Out-Null
+}
 
 Copy-Item -LiteralPath $pluginSource -Destination (Join-Path $vstDirectory "CS2MicInjector.dll") -Force
 Copy-Item -LiteralPath $includeSource -Destination $includeDestination -Force

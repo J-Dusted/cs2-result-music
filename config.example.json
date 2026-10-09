@@ -7,7 +7,10 @@
     "music": {
         "root": "music",
         "win_dir": "win",
-        "lose_dir": "lose"
+        "lose_dir": "lose",
+        "start_dir": "start",
+        "mvp_dir": "mvp",
+        "bomb10_dir": "bomb10"
     },
     "playback": {
         "win": {
@@ -17,10 +20,34 @@
         "lose": {
             "mode": "random",
             "specific": ""
+        },
+        "start": {
+            "mode": "random",
+            "specific": ""
+        },
+        "mvp": {
+            "mode": "random",
+            "specific": ""
+        },
+        "bomb10": {
+            "mode": "random",
+            "specific": ""
         }
     },
     "trigger": {
-        "mode": "round"
+        "mode": "round",
+        "start": true,
+        "mvp": {
+            "enabled": true,
+            "player_names": [
+                "你的游戏昵称"
+            ]
+        },
+        "bomb10": {
+            "enabled": true,
+            "lead_seconds": 10.0,
+            "fallback_plant_seconds": 30.0
+        }
     },
     "audio": {
         "mic_gain_db": -6.0,

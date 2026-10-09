@@ -1,8 +1,9 @@
 # CS2 胜负音乐注入实体麦克风
 
-这个项目在 CS2 对局结束时播放胜利或失败音乐，并把同一首音乐混入
-HECATE G2 GAMING HEADSET 的麦克风采集链。TeamSpeak 继续选择原来的
-HECATE 麦克风，不需要虚拟声卡，也不会把你和朋友的正常通话切走。
+这个项目在 CS2 中根据胜负、地图开局/换边、本机 MVP 和炸弹爆炸倒计时
+播放音乐，并把同一首音乐混入 HECATE G2 GAMING HEADSET 的麦克风采集链。
+TeamSpeak 继续选择原来的 HECATE 麦克风，不需要虚拟声卡，也不会把你和
+朋友的正常通话切走。
 
 底层结构和 Soundpad 的关键点相同：不是在某个语音软件里做适配，而是在
 麦克风的音频采集链里改变进入语音软件之前的 PCM 信号。这里使用官方
@@ -14,7 +15,7 @@ APO 会按它自身的标准安装方式设置 Windows 的 `DisableProtectedAudi
 
 ```text
 cs2-result-music/
-  cs2_result_music.py        GSI、胜负判断、曲目选择、命令发布
+  cs2_result_music.py        GSI、事件判断、曲目选择、命令发布
   config.example.json        主配置模板
   config.json                本地私有配置，已被 Git 忽略
   start.bat                  手动启动监听器
@@ -28,13 +29,15 @@ cs2-result-music/
   music/
     win/                     胜利音乐
     lose/                    失败音乐
+    start/                   开局与换边音乐
+    mvp/                     本机 MVP 音乐
+    bomb10/                  炸弹爆炸前 10 秒音乐
   tests/
     test_cs2_result_music.py Python 单元测试
 ```
 
-音乐目录默认是 `music/win` 和 `music/lose`，支持 `.mp3`、`.wav`、
-`.m4a`、`.aac`、`.flac`。实际能否解码取决于 Windows 当前安装的
-Media Foundation 解码器。
+五个音乐目录互相独立，支持 `.mp3`、`.wav`、`.m4a`、`.aac`、`.flac`。
+实际能否解码取决于 Windows 当前安装的 Media Foundation 解码器。
 
 ## 安装
 
@@ -61,13 +64,15 @@ PowerShell 中执行：
 .\install.ps1
 ```
 
-安装脚本主要做四件事：
+安装脚本主要做五件事：
 
 - 把 `CS2MicInjector.dll` 放到 `C:\Program Files\EqualizerAPO\VSTPlugins`。
 - 把 `deploy\cs2_result_music.txt` 放到 APO 配置目录，并仅在原
   `config.txt` 中追加一个带标记的 `Include`，不会覆盖已有 EQ。
 - 创建 `C:\ProgramData\CS2ResultAudio` 并给 Windows 音频服务和当前
   用户读写权限。
+- 创建 `music/win`、`music/lose`、`music/start`、`music/mvp` 和
+  `music/bomb10` 五个曲库目录。
 - 用 Equalizer APO 相同的注册规则，只给 HECATE G2 GAMING HEADSET
   麦克风的 capture pre-mix 阶段启用 APO；不处理扬声器设备。
 
@@ -121,14 +126,24 @@ python .\cs2_result_music.py --install-gsi
 
 ### 4. 放入音乐并启动
 
-把胜利音乐放入 `music/win`，失败音乐放入 `music/lose`，然后：
+按需要把音乐分别放入：
+
+```text
+music/win
+music/lose
+music/start
+music/mvp
+music/bomb10
+```
+
+然后启动：
 
 ```powershell
 .\start.bat
 ```
 
-这个窗口用于接收 CS2 GSI 并判断胜负，必须在 CS2 运行期间保持开启。
-`--test win` 和 `--test lose` 只做一次手动音频测试，不会启动持续监听。
+这个窗口用于接收 CS2 GSI 并判断事件，必须在 CS2 运行期间保持开启。
+`--test` 只做一次手动音频测试，不会启动持续监听。
 
 默认是手动启动。需要开机自启时运行：
 
@@ -144,7 +159,8 @@ python .\cs2_result_music.py --install-gsi
 
 ## 曲目模式
 
-`config.json` 的 `playback.win` 和 `playback.lose` 各自独立配置。
+`config.json` 的 `playback` 下五个事件各自独立配置：
+`win`、`lose`、`start`、`mvp`、`bomb10`。
 
 随机播放：
 
@@ -202,18 +218,23 @@ python .\cs2_result_music.py --check-audio
 python .\cs2_result_music.py --check-apo
 python .\cs2_result_music.py --test win
 python .\cs2_result_music.py --test lose
+python .\cs2_result_music.py --test start
+python .\cs2_result_music.py --test mvp
+python .\cs2_result_music.py --test bomb10
 python .\cs2_result_music.py --install-gsi
 python .\cs2_result_music.py --capture-gsi
 ```
 
-`--test win` 和 `--test lose` 会像真实对局结束一样写入命令并要求插件
-播放对应目录的音乐。测试时同时让朋友在 TeamSpeak 中确认麦克风端
-能听到音乐，再确认你说话时没有中断。
+`--test` 会像真实事件一样写入命令并要求插件播放对应目录的音乐。测试时
+同时让朋友在 TeamSpeak 中确认麦克风端能听到音乐，再确认你说话时没有
+中断。
 
 `--capture-gsi` 会在正常监听的同时，把 CS2 发来的每个原始 JSON 快照
 追加到 `work/gsi-capture.jsonl`。实战一局后可以检查其中的
-`player.team`、`map.team_ct.score`、`map.team_t.score`、`map.phase`
-和 `round.win_team`，确认真实 GSI 数据与判定逻辑完全一致。
+`player.team`、`player.name`、`player.match_stats.mvps`、
+`map.team_ct.score`、`map.team_t.score`、`map.phase`、
+`round.win_team`、`bomb.countdown` 和 `phase_countdowns`，确认真实 GSI
+数据与判定逻辑完全一致。
 
 也可以直接双击或在终端运行：
 
@@ -244,6 +265,21 @@ python .\cs2_result_music.py --capture-gsi
 - 平局、缺少队伍、缺少比分、死斗和军备竞赛不播放。
 - 下一张地图进入预热或实时阶段后重置事件状态。
 - 同一局即使 GSI 连续发送多个 `gameover` 快照，也只触发一次。
+
+新增事件：
+
+- `start`：同一张地图观察过热身后，第一回合 `freezetime` 播放一次；同一
+  张图内检测到 `player.team` 从 CT/T 切换并在新半场 `freezetime` 时再
+  播放一次。
+- `mvp`：只判断本机玩家。`player.name` 与
+  `trigger.mvp.player_names` 去空格、大小写不敏感匹配；配置为空时只使用
+  本机玩家名称。`player.match_stats.mvps` 增长时播放。
+- `bomb10`：优先使用 `bomb.countdown`，其次使用
+  `phase_countdowns`，字段缺失时从 `round.bomb=planted` 开始计时
+  `trigger.bomb10.fallback_plant_seconds` 秒。默认在剩余 10 秒时播放，
+  每回合最多一次，拆弹或回合结束后取消未触发的回退计时。
+- 同一快照同时满足多个事件时优先级为
+  `mvp`、`bomb10`、`start`、`win/lose`。
 
 ## 卸载
 

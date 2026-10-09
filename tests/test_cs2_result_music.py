@@ -34,6 +34,11 @@ def gsi_payload(
     round_number: int | None = None,
     round_phase: str | None = None,
     round_winner: str | None = None,
+    player_name: str | None = None,
+    mvps: int | None = None,
+    bomb_state: str | None = None,
+    bomb_countdown: float | None = None,
+    phase_countdowns: dict | None = None,
 ) -> dict:
     payload = {
         "provider": {"timestamp": timestamp},
@@ -56,24 +61,128 @@ def gsi_payload(
             payload["round"]["phase"] = round_phase
         if round_winner is not None:
             payload["round"]["win_team"] = round_winner
+    if player_name is not None:
+        payload["player"]["name"] = player_name
+    if mvps is not None:
+        payload["player"]["match_stats"] = {"mvps": mvps}
+    if bomb_state is not None or bomb_countdown is not None:
+        payload["bomb"] = {}
+        if bomb_state is not None:
+            payload["bomb"]["state"] = bomb_state
+        if bomb_countdown is not None:
+            payload["bomb"]["countdown"] = bomb_countdown
+    if phase_countdowns is not None:
+        payload["phase_countdowns"] = phase_countdowns
     return payload
+
+
+def event_names(events: list[app.MusicEvent]) -> list[str]:
+    return [event.event for event in events]
+
+
+class ConfigTests(unittest.TestCase):
+    def test_old_config_gets_new_event_defaults(self) -> None:
+        root = make_temp_dir()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "gsi": {"port": 3001, "token": "secret"},
+                    "music": {
+                        "root": "music",
+                        "win_dir": "win",
+                        "lose_dir": "lose",
+                    },
+                    "playback": {
+                        "win": {"mode": "random"},
+                        "lose": {"mode": "random"},
+                    },
+                    "trigger": {"mode": "round"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        config = app.AppConfig.load(path)
+
+        self.assertEqual(config.start_dir, (root / "music" / "start").resolve())
+        self.assertEqual(config.mvp_dir, (root / "music" / "mvp").resolve())
+        self.assertEqual(config.bomb10_dir, (root / "music" / "bomb10").resolve())
+        self.assertTrue(config.start_enabled)
+        self.assertTrue(config.mvp_enabled)
+        self.assertTrue(config.bomb10_enabled)
+        self.assertEqual(config.bomb10_lead_seconds, 10.0)
+
+    def test_new_config_parses_names_and_rules(self) -> None:
+        root = make_temp_dir()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "gsi": {"port": 3001, "token": "secret"},
+                    "music": {
+                        "root": "library",
+                        "win_dir": "W",
+                        "lose_dir": "L",
+                        "start_dir": "S",
+                        "mvp_dir": "M",
+                        "bomb10_dir": "B",
+                    },
+                    "playback": {
+                        "win": {"mode": "random"},
+                        "lose": {"mode": "random"},
+                        "start": {"mode": "sequential"},
+                        "mvp": {"mode": "specific", "specific": "mvp.mp3"},
+                        "bomb10": {"mode": "random"},
+                    },
+                    "trigger": {
+                        "mode": "round",
+                        "start": False,
+                        "mvp": {
+                            "enabled": True,
+                            "player_names": [" Player One ", "player one", "Two"],
+                        },
+                        "bomb10": {
+                            "enabled": True,
+                            "lead_seconds": 8,
+                            "fallback_plant_seconds": 28,
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        config = app.AppConfig.load(path)
+
+        self.assertFalse(config.start_enabled)
+        self.assertEqual(config.mvp_player_names, ("Player One", "Two"))
+        self.assertEqual(config.mvp_rule.mode, "specific")
+        self.assertEqual(config.bomb10_lead_seconds, 8.0)
+        self.assertEqual(config.bomb10_fallback_plant_seconds, 28.0)
 
 
 class GameStateTests(unittest.TestCase):
     def test_only_transition_into_gameover_triggers(self) -> None:
         state = app.GameState()
-        self.assertIsNone(state.observe(gsi_payload(phase="live", timestamp=1)))
-        result = state.observe(gsi_payload(phase="gameover", timestamp=2))
-        self.assertIsNotNone(result)
-        self.assertEqual(result.outcome, "win")
-        self.assertIsNone(state.observe(gsi_payload(phase="gameover", timestamp=3)))
+        self.assertEqual(state.observe(gsi_payload(phase="live", timestamp=1)), [])
+        self.assertEqual(
+            event_names(state.observe(gsi_payload(phase="gameover", timestamp=2))),
+            ["win"],
+        )
+        self.assertEqual(
+            state.observe(gsi_payload(phase="gameover", timestamp=3)),
+            [],
+        )
 
     def test_new_round_resets_handled_state(self) -> None:
         state = app.GameState()
         state.observe(gsi_payload(phase="live", timestamp=1))
         self.assertEqual(
-            state.observe(gsi_payload(phase="gameover", timestamp=2)).outcome,
-            "win",
+            event_names(state.observe(gsi_payload(phase="gameover", timestamp=2))),
+            ["win"],
         )
         state.observe(
             gsi_payload(
@@ -84,24 +193,29 @@ class GameStateTests(unittest.TestCase):
                 timestamp=3,
             )
         )
-        result = state.observe(
-            gsi_payload(
-                phase="gameover",
-                team="T",
-                score_ct=5,
-                score_t=13,
-                timestamp=4,
-            )
+        self.assertEqual(
+            event_names(
+                state.observe(
+                    gsi_payload(
+                        phase="gameover",
+                        team="T",
+                        score_ct=5,
+                        score_t=13,
+                        timestamp=4,
+                    )
+                )
+            ),
+            ["win"],
         )
-        self.assertEqual(result.outcome, "win")
 
     def test_draw_does_not_trigger(self) -> None:
         state = app.GameState()
         state.observe(gsi_payload(phase="live", timestamp=1))
-        self.assertIsNone(
+        self.assertEqual(
             state.observe(
                 gsi_payload(phase="gameover", score_ct=13, score_t=13, timestamp=2)
-            )
+            ),
+            [],
         )
 
     def test_missing_team_and_score_do_not_trigger(self) -> None:
@@ -119,20 +233,12 @@ class GameStateTests(unittest.TestCase):
     def test_solo_modes_do_not_trigger(self) -> None:
         self.assertIsNone(
             app.determine_match_result(
-                gsi_payload(
-                    phase="gameover",
-                    mode="deathmatch",
-                    timestamp=1,
-                )
+                gsi_payload(phase="gameover", mode="deathmatch", timestamp=1)
             )
         )
         self.assertIsNone(
             app.determine_match_result(
-                gsi_payload(
-                    phase="gameover",
-                    mode="armsrace",
-                    timestamp=1,
-                )
+                gsi_payload(phase="gameover", mode="armsrace", timestamp=1)
             )
         )
 
@@ -140,13 +246,14 @@ class GameStateTests(unittest.TestCase):
         state = app.GameState()
         state.observe(gsi_payload(phase="live", timestamp=10))
         state.observe(gsi_payload(phase="live", timestamp=20))
-        self.assertIsNone(
-            state.observe(gsi_payload(phase="gameover", timestamp=15))
+        self.assertEqual(
+            state.observe(gsi_payload(phase="gameover", timestamp=15)),
+            [],
         )
 
     def test_round_mode_triggers_once_on_each_round_result(self) -> None:
         state = app.GameState("round")
-        self.assertIsNone(
+        self.assertEqual(
             state.observe(
                 gsi_payload(
                     phase="live",
@@ -154,22 +261,26 @@ class GameStateTests(unittest.TestCase):
                     round_phase="live",
                     timestamp=1,
                 )
-            )
+            ),
+            [],
         )
-        result = state.observe(
-            gsi_payload(
-                phase="live",
-                round_number=1,
-                round_phase="over",
-                round_winner="CT",
-                score_ct=1,
-                score_t=0,
-                timestamp=2,
-            )
+        self.assertEqual(
+            event_names(
+                state.observe(
+                    gsi_payload(
+                        phase="live",
+                        round_number=1,
+                        round_phase="over",
+                        round_winner="CT",
+                        score_ct=1,
+                        score_t=0,
+                        timestamp=2,
+                    )
+                )
+            ),
+            ["win"],
         )
-        self.assertIsNotNone(result)
-        self.assertEqual(result.outcome, "win")
-        self.assertIsNone(
+        self.assertEqual(
             state.observe(
                 gsi_payload(
                     phase="live",
@@ -180,25 +291,29 @@ class GameStateTests(unittest.TestCase):
                     score_t=0,
                     timestamp=3,
                 )
-            )
+            ),
+            [],
         )
-        result = state.observe(
-            gsi_payload(
-                phase="live",
-                round_number=2,
-                round_phase="over",
-                round_winner="T",
-                score_ct=1,
-                score_t=1,
-                timestamp=4,
-            )
+        self.assertEqual(
+            event_names(
+                state.observe(
+                    gsi_payload(
+                        phase="live",
+                        round_number=2,
+                        round_phase="over",
+                        round_winner="T",
+                        score_ct=1,
+                        score_t=1,
+                        timestamp=4,
+                    )
+                )
+            ),
+            ["lose"],
         )
-        self.assertIsNotNone(result)
-        self.assertEqual(result.outcome, "lose")
 
     def test_round_mode_requires_a_valid_winner(self) -> None:
         state = app.GameState("round")
-        self.assertIsNone(
+        self.assertEqual(
             state.observe(
                 gsi_payload(
                     phase="live",
@@ -206,8 +321,331 @@ class GameStateTests(unittest.TestCase):
                     round_phase="over",
                     timestamp=1,
                 )
+            ),
+            [],
+        )
+
+    def test_start_triggers_after_warmup_once_per_side(self) -> None:
+        state = app.GameState("round")
+        self.assertEqual(
+            state.observe(
+                gsi_payload(
+                    phase="warmup",
+                    round_number=0,
+                    round_phase="freezetime",
+                    timestamp=1,
+                )
+            ),
+            [],
+        )
+        self.assertEqual(
+            event_names(
+                state.observe(
+                    gsi_payload(
+                        phase="live",
+                        round_number=0,
+                        round_phase="freezetime",
+                        timestamp=2,
+                    )
+                )
+            ),
+            ["start"],
+        )
+        self.assertEqual(
+            state.observe(
+                gsi_payload(
+                    phase="live",
+                    round_number=1,
+                    round_phase="freezetime",
+                    timestamp=3,
+                )
+            ),
+            [],
+        )
+        self.assertEqual(
+            event_names(
+                state.observe(
+                    gsi_payload(
+                        phase="live",
+                        team="T",
+                        round_number=12,
+                        round_phase="freezetime",
+                        timestamp=4,
+                    )
+                )
+            ),
+            ["start"],
+        )
+
+    def test_start_can_fill_initial_round_but_not_mid_match(self) -> None:
+        early = app.GameState("round")
+        self.assertEqual(
+            event_names(
+                early.observe(
+                    gsi_payload(
+                        phase="live",
+                        round_number=0,
+                        round_phase="freezetime",
+                        timestamp=1,
+                    )
+                )
+            ),
+            ["start"],
+        )
+
+        # A map whose first round index is 1 must not be treated as the first
+        # round unless warmup was observed, otherwise a mid-map launch replays
+        # the start music on the second round.
+        second = app.GameState("round")
+        self.assertEqual(
+            second.observe(
+                gsi_payload(
+                    phase="live",
+                    round_number=1,
+                    round_phase="freezetime",
+                    timestamp=1,
+                )
+            ),
+            [],
+        )
+
+        late = app.GameState("round")
+        self.assertEqual(
+            late.observe(
+                gsi_payload(
+                    phase="live",
+                    round_number=7,
+                    round_phase="freezetime",
+                    timestamp=1,
+                )
+            ),
+            [],
+        )
+
+    def test_mvp_requires_growth_and_matching_name(self) -> None:
+        state = app.GameState("round", mvp_player_names=("  Player One ",))
+        self.assertEqual(
+            state.observe(
+                gsi_payload(
+                    phase="live",
+                    player_name="player one",
+                    mvps=2,
+                    timestamp=1,
+                )
+            ),
+            [],
+        )
+        self.assertEqual(
+            event_names(
+                state.observe(
+                    gsi_payload(
+                        phase="live",
+                        player_name="PLAYER ONE",
+                        mvps=3,
+                        timestamp=2,
+                    )
+                )
+            ),
+            ["mvp"],
+        )
+        self.assertEqual(
+            state.observe(
+                gsi_payload(
+                    phase="live",
+                    player_name="PLAYER ONE",
+                    mvps=3,
+                    timestamp=3,
+                )
+            ),
+            [],
+        )
+
+    def test_empty_mvp_names_means_local_player(self) -> None:
+        state = app.GameState("round", mvp_player_names=())
+        state.observe(
+            gsi_payload(
+                phase="live",
+                player_name="Any Local Name",
+                mvps=1,
+                timestamp=1,
             )
         )
+        self.assertEqual(
+            event_names(
+                state.observe(
+                    gsi_payload(
+                        phase="live",
+                        player_name="Any Local Name",
+                        mvps=2,
+                        timestamp=2,
+                    )
+                )
+            ),
+            ["mvp"],
+        )
+
+    def test_mvp_has_priority_over_round_result(self) -> None:
+        state = app.GameState("round", mvp_player_names=("Player",))
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=1,
+                round_phase="live",
+                player_name="Player",
+                mvps=0,
+                timestamp=1,
+            )
+        )
+        events = state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=1,
+                round_phase="over",
+                round_winner="CT",
+                score_ct=1,
+                score_t=0,
+                player_name="Player",
+                mvps=1,
+                timestamp=2,
+            )
+        )
+        self.assertEqual(event_names(events), ["mvp", "win"])
+
+    def test_bomb_countdown_triggers_once_at_threshold(self) -> None:
+        state = app.GameState("round", bomb10_lead_seconds=10)
+        self.assertEqual(
+            state.observe(
+                gsi_payload(
+                    phase="live",
+                    round_number=3,
+                    round_phase="live",
+                    bomb_state="planted",
+                    bomb_countdown=11,
+                    timestamp=1,
+                )
+            ),
+            [],
+        )
+        self.assertEqual(
+            event_names(
+                state.observe(
+                    gsi_payload(
+                        phase="live",
+                        round_number=3,
+                        round_phase="live",
+                        bomb_state="planted",
+                        bomb_countdown=9.9,
+                        timestamp=2,
+                    )
+                )
+            ),
+            ["bomb10"],
+        )
+        self.assertEqual(
+            state.observe(
+                gsi_payload(
+                    phase="live",
+                    round_number=3,
+                    round_phase="live",
+                    bomb_state="planted",
+                    bomb_countdown=9.8,
+                    timestamp=3,
+                )
+            ),
+            [],
+        )
+
+    def test_phase_countdowns_can_drive_bomb_event(self) -> None:
+        state = app.GameState("round", bomb10_lead_seconds=10)
+        self.assertEqual(
+            event_names(
+                state.observe(
+                    gsi_payload(
+                        phase="live",
+                        round_number=3,
+                        round_phase="live",
+                        bomb_state="planted",
+                        phase_countdowns={"phase": "bomb", "phase_ends_in": 9.5},
+                        timestamp=1,
+                    )
+                )
+            ),
+            ["bomb10"],
+        )
+
+    def test_bomb_fallback_uses_local_30_second_timer(self) -> None:
+        now = [0.0]
+        state = app.GameState(
+            "round",
+            bomb10_lead_seconds=10,
+            bomb10_fallback_plant_seconds=30,
+            clock=lambda: now[0],
+        )
+        self.assertEqual(
+            state.observe(
+                gsi_payload(
+                    phase="live",
+                    round_number=4,
+                    round_phase="live",
+                    bomb_state="planted",
+                    timestamp=1,
+                )
+            ),
+            [],
+        )
+        now[0] = 29.9
+        self.assertEqual(state.poll(), [])
+        now[0] = 30.0
+        self.assertEqual(event_names(state.poll()), ["bomb10"])
+        self.assertEqual(state.poll(), [])
+
+    def test_bomb_fallback_cancels_when_defused_or_round_ends(self) -> None:
+        now = [0.0]
+        state = app.GameState("round", clock=lambda: now[0])
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=4,
+                round_phase="live",
+                bomb_state="planted",
+                timestamp=1,
+            )
+        )
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=4,
+                round_phase="live",
+                bomb_state="defused",
+                timestamp=2,
+            )
+        )
+        now[0] = 31.0
+        self.assertEqual(state.poll(), [])
+
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=5,
+                round_phase="live",
+                bomb_state="planted",
+                timestamp=3,
+            )
+        )
+        state.observe(
+            gsi_payload(
+                phase="live",
+                round_number=5,
+                round_phase="over",
+                round_winner="CT",
+                score_ct=1,
+                score_t=0,
+                bomb_state="planted",
+                timestamp=4,
+            )
+        )
+        now[0] = 100.0
+        self.assertEqual(state.poll(), [])
 
 
 class LibraryTests(unittest.TestCase):
@@ -215,22 +653,56 @@ class LibraryTests(unittest.TestCase):
         self.root = make_temp_dir()
         self.win_dir = self.root / "win"
         self.lose_dir = self.root / "lose"
-        self.win_dir.mkdir()
-        self.lose_dir.mkdir()
+        self.start_dir = self.root / "start"
+        self.mvp_dir = self.root / "mvp"
+        self.bomb10_dir = self.root / "bomb10"
+        for directory in (
+            self.win_dir,
+            self.lose_dir,
+            self.start_dir,
+            self.mvp_dir,
+            self.bomb10_dir,
+        ):
+            directory.mkdir()
         for name in ("a.mp3", "b.mp3"):
             (self.win_dir / name).write_bytes(b"test")
         for name in ("a.wav", "b.wav"):
             (self.lose_dir / name).write_bytes(b"test")
+        for name in ("s1.mp3", "s2.mp3"):
+            (self.start_dir / name).write_bytes(b"test")
+        for name in ("m1.mp3", "m2.mp3"):
+            (self.mvp_dir / name).write_bytes(b"test")
+        for name in ("b1.mp3", "b2.mp3"):
+            (self.bomb10_dir / name).write_bytes(b"test")
 
     def tearDown(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
 
+    def make_library(self, rules: dict[str, app.PlaybackRule]) -> app.MusicLibrary:
+        directories = {
+            "win": self.win_dir,
+            "lose": self.lose_dir,
+            "start": self.start_dir,
+            "mvp": self.mvp_dir,
+            "bomb10": self.bomb10_dir,
+        }
+        return app.MusicLibrary(
+            directories,
+            rules,
+            app.SequenceStore(self.root / "sequence.json"),
+        )
+
     def test_random_avoids_previous_track(self) -> None:
+        rules = {event: app.PlaybackRule("random") for event in app.EVENT_KINDS}
         library = app.MusicLibrary(
-            self.win_dir,
-            self.lose_dir,
-            app.PlaybackRule("random"),
-            app.PlaybackRule("random"),
+            {
+                "win": self.win_dir,
+                "lose": self.lose_dir,
+                "start": self.start_dir,
+                "mvp": self.mvp_dir,
+                "bomb10": self.bomb10_dir,
+            },
+            rules,
             app.SequenceStore(self.root / "sequence.json"),
             random.Random(123),
         )
@@ -238,49 +710,29 @@ class LibraryTests(unittest.TestCase):
         second = library.choose("win")
         self.assertNotEqual(first, second)
 
-    def test_sequential_advances_and_persists(self) -> None:
-        state_path = self.root / "sequence.json"
-        first_library = app.MusicLibrary(
-            self.win_dir,
-            self.lose_dir,
-            app.PlaybackRule("sequential"),
-            app.PlaybackRule("sequential"),
-            app.SequenceStore(state_path),
-        )
-        self.assertEqual(first_library.choose("win").read_bytes(), b"test")
-        first = first_library.choose("win").name
-        second = first_library.choose("win").name
+    def test_sequential_advances_and_persists_per_event(self) -> None:
+        rules = {event: app.PlaybackRule("sequential") for event in app.EVENT_KINDS}
+        first_library = self.make_library(rules)
+        first = first_library.choose("mvp").name
+        second = first_library.choose("mvp").name
         self.assertNotEqual(first, second)
+        self.assertEqual(first_library.choose("bomb10").name, "b1.mp3")
 
-        second_library = app.MusicLibrary(
-            self.win_dir,
-            self.lose_dir,
-            app.PlaybackRule("sequential"),
-            app.PlaybackRule("sequential"),
-            app.SequenceStore(state_path),
-        )
-        self.assertEqual(second_library.choose("win").name, first)
+        second_library = self.make_library(rules)
+        self.assertEqual(second_library.choose("mvp").name, first)
 
     def test_specific_track_is_allowed_inside_directory(self) -> None:
-        library = app.MusicLibrary(
-            self.win_dir,
-            self.lose_dir,
-            app.PlaybackRule("specific", "b.mp3"),
-            app.PlaybackRule("random"),
-            app.SequenceStore(self.root / "sequence.json"),
-        )
-        self.assertEqual(library.choose("win"), self.win_dir / "b.mp3")
+        rules = {event: app.PlaybackRule("random") for event in app.EVENT_KINDS}
+        rules["mvp"] = app.PlaybackRule("specific", "m2.mp3")
+        library = self.make_library(rules)
+        self.assertEqual(library.choose("mvp"), self.mvp_dir / "m2.mp3")
 
     def test_specific_track_cannot_escape_directory(self) -> None:
-        library = app.MusicLibrary(
-            self.win_dir,
-            self.lose_dir,
-            app.PlaybackRule("specific", "../lose/a.wav"),
-            app.PlaybackRule("random"),
-            app.SequenceStore(self.root / "sequence.json"),
-        )
+        rules = {event: app.PlaybackRule("random") for event in app.EVENT_KINDS}
+        rules["mvp"] = app.PlaybackRule("specific", "../lose/a.wav")
+        library = self.make_library(rules)
         with self.assertRaises(FileNotFoundError):
-            library.choose("win")
+            library.choose("mvp")
 
 
 class CommandTests(unittest.TestCase):
@@ -341,11 +793,11 @@ class StagingTests(unittest.TestCase):
         source.write_bytes(b"audio-data")
         staging = root / "staging"
 
-        staged = app._stage_track(source, staging, "win")
+        staged = app._stage_track(source, staging, "start")
 
         self.assertEqual(staged.parent, staging)
         self.assertEqual(staged.suffix, ".mp3")
-        self.assertTrue(staged.name.startswith("win-"))
+        self.assertTrue(staged.name.startswith("start-"))
         self.assertNotEqual(staged, source)
         self.assertEqual(staged.read_bytes(), b"audio-data")
 
@@ -355,8 +807,8 @@ class StagingTests(unittest.TestCase):
         source = root / "song.wav"
         source.write_bytes(b"audio-data")
 
-        first = app._stage_track(source, root / "staging", "lose")
-        second = app._stage_track(source, root / "staging", "lose")
+        first = app._stage_track(source, root / "staging", "bomb10")
+        second = app._stage_track(source, root / "staging", "bomb10")
 
         self.assertNotEqual(first, second)
         self.assertEqual(first.read_bytes(), second.read_bytes())

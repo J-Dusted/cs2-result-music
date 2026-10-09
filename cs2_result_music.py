@@ -24,7 +24,7 @@ import winreg
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs, urlparse
 
 
@@ -34,6 +34,8 @@ DEFAULT_SEQUENCE_FILE = Path(r"C:\ProgramData\CS2ResultAudio\sequence.json")
 DEFAULT_STATUS_FILE = Path(r"C:\ProgramData\CS2ResultAudio\status.txt")
 DEFAULT_STAGING_DIR = Path(r"C:\ProgramData\CS2ResultAudio\staging")
 SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac"}
+EVENT_KINDS = ("win", "lose", "start", "mvp", "bomb10")
+RESULT_EVENTS = ("win", "lose")
 TEAM_MODES = {
     "competitive",
     "scrimcomp2v2",
@@ -75,9 +77,21 @@ class AppConfig:
     music_root: Path
     win_dir: Path
     lose_dir: Path
+    start_dir: Path
+    mvp_dir: Path
+    bomb10_dir: Path
     win_rule: PlaybackRule
     lose_rule: PlaybackRule
+    start_rule: PlaybackRule
+    mvp_rule: PlaybackRule
+    bomb10_rule: PlaybackRule
     trigger_mode: str
+    start_enabled: bool
+    mvp_enabled: bool
+    mvp_player_names: tuple[str, ...]
+    bomb10_enabled: bool
+    bomb10_lead_seconds: float
+    bomb10_fallback_plant_seconds: float
     mic_gain_db: float
     local_enabled: bool
     local_player: Path
@@ -89,6 +103,34 @@ class AppConfig:
     staging_dir: Path
     equalizer_apo_dir: Path
     plugin_name: str
+
+    def event_dirs(self) -> dict[str, Path]:
+        return {
+            "win": self.win_dir,
+            "lose": self.lose_dir,
+            "start": self.start_dir,
+            "mvp": self.mvp_dir,
+            "bomb10": self.bomb10_dir,
+        }
+
+    def event_rules(self) -> dict[str, PlaybackRule]:
+        return {
+            "win": self.win_rule,
+            "lose": self.lose_rule,
+            "start": self.start_rule,
+            "mvp": self.mvp_rule,
+            "bomb10": self.bomb10_rule,
+        }
+
+    def enabled_events(self) -> tuple[str, ...]:
+        enabled = list(RESULT_EVENTS)
+        if self.start_enabled:
+            enabled.append("start")
+        if self.mvp_enabled:
+            enabled.append("mvp")
+        if self.bomb10_enabled:
+            enabled.append("bomb10")
+        return tuple(enabled)
 
     @classmethod
     def load(cls, path: Path) -> "AppConfig":
@@ -114,15 +156,55 @@ class AppConfig:
         music_root = _resolve_path(base, str(library.get("root", "music")))
         win_dir = _resolve_path(music_root, str(library.get("win_dir", "win")))
         lose_dir = _resolve_path(music_root, str(library.get("lose_dir", "lose")))
+        start_dir = _resolve_path(music_root, str(library.get("start_dir", "start")))
+        mvp_dir = _resolve_path(music_root, str(library.get("mvp_dir", "mvp")))
+        bomb10_dir = _resolve_path(
+            music_root, str(library.get("bomb10_dir", "bomb10"))
+        )
         win_rule = _rule(playback.get("win"), "playback.win")
         lose_rule = _rule(playback.get("lose"), "playback.lose")
-        win_rule.validate()
-        lose_rule.validate()
+        start_rule = _rule(playback.get("start"), "playback.start")
+        mvp_rule = _rule(playback.get("mvp"), "playback.mvp")
+        bomb10_rule = _rule(playback.get("bomb10"), "playback.bomb10")
+        for event, rule in (
+            ("win", win_rule),
+            ("lose", lose_rule),
+            ("start", start_rule),
+            ("mvp", mvp_rule),
+            ("bomb10", bomb10_rule),
+        ):
+            try:
+                rule.validate()
+            except ConfigError as exc:
+                raise ConfigError(f"{event}: {exc}") from exc
+
         trigger = _object(raw.get("trigger", {}), "trigger")
         trigger_mode = str(trigger.get("mode", "match")).strip().lower()
         if trigger_mode not in {"match", "round"}:
             raise ConfigError(
                 "trigger.mode must be either 'match' or 'round'."
+            )
+        start_enabled = _boolean(trigger.get("start", True), "trigger.start")
+        mvp = _object(trigger.get("mvp", {}), "trigger.mvp")
+        mvp_enabled = _boolean(mvp.get("enabled", True), "trigger.mvp.enabled")
+        mvp_player_names = _player_names(mvp.get("player_names", []))
+        bomb10 = _object(trigger.get("bomb10", {}), "trigger.bomb10")
+        bomb10_enabled = _boolean(
+            bomb10.get("enabled", True), "trigger.bomb10.enabled"
+        )
+        bomb10_lead_seconds = _finite_float(
+            bomb10.get("lead_seconds", 10.0), "trigger.bomb10.lead_seconds"
+        )
+        bomb10_fallback_plant_seconds = _finite_float(
+            bomb10.get("fallback_plant_seconds", 30.0),
+            "trigger.bomb10.fallback_plant_seconds",
+        )
+        if bomb10_lead_seconds <= 0:
+            raise ConfigError("trigger.bomb10.lead_seconds must be positive.")
+        if bomb10_fallback_plant_seconds <= bomb10_lead_seconds:
+            raise ConfigError(
+                "trigger.bomb10.fallback_plant_seconds must be greater than "
+                "trigger.bomb10.lead_seconds."
             )
 
         command_file = _resolve_path(
@@ -157,9 +239,21 @@ class AppConfig:
             music_root=music_root,
             win_dir=win_dir,
             lose_dir=lose_dir,
+            start_dir=start_dir,
+            mvp_dir=mvp_dir,
+            bomb10_dir=bomb10_dir,
             win_rule=win_rule,
             lose_rule=lose_rule,
+            start_rule=start_rule,
+            mvp_rule=mvp_rule,
+            bomb10_rule=bomb10_rule,
             trigger_mode=trigger_mode,
+            start_enabled=start_enabled,
+            mvp_enabled=mvp_enabled,
+            mvp_player_names=mvp_player_names,
+            bomb10_enabled=bomb10_enabled,
+            bomb10_lead_seconds=bomb10_lead_seconds,
+            bomb10_fallback_plant_seconds=bomb10_fallback_plant_seconds,
             mic_gain_db=_finite_float(audio.get("mic_gain_db", -6.0), "audio.mic_gain_db"),
             local_enabled=bool(local.get("enabled", False)),
             local_player=local_player,
@@ -178,29 +272,66 @@ class AppConfig:
 
 
 @dataclass(frozen=True)
-class MatchResult:
-    outcome: str
-    team: str
-    score_ct: int
-    score_t: int
-    map_name: str
-    mode: str
+class MusicEvent:
+    event: str
+    team: str = ""
+    score_ct: int = 0
+    score_t: int = 0
+    map_name: str = ""
+    mode: str = ""
 
 
 class GameState:
-    """Turns GSI snapshots into one result event per map."""
+    """Turns GSI snapshots into independent music events."""
 
-    def __init__(self, trigger_mode: str = "match") -> None:
+    def __init__(
+        self,
+        trigger_mode: str = "match",
+        *,
+        start_enabled: bool = True,
+        mvp_enabled: bool = True,
+        mvp_player_names: Iterable[str] = (),
+        bomb10_enabled: bool = True,
+        bomb10_lead_seconds: float = 10.0,
+        bomb10_fallback_plant_seconds: float = 30.0,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         if trigger_mode not in {"match", "round"}:
             raise ValueError("trigger_mode must be match or round")
         self.trigger_mode = trigger_mode
+        self.start_enabled = start_enabled
+        self.mvp_enabled = mvp_enabled
+        self.mvp_player_names = tuple(
+            _normalize_player_name(name)
+            for name in mvp_player_names
+            if _normalize_player_name(name)
+        )
+        self.bomb10_enabled = bomb10_enabled
+        self.bomb10_lead_seconds = float(bomb10_lead_seconds)
+        self.bomb10_fallback_plant_seconds = float(
+            bomb10_fallback_plant_seconds
+        )
+        self.clock = clock or time.monotonic
+
         self.last_phase: str | None = None
         self.last_timestamp: int | None = None
         self.map_identity: tuple[str, str] | None = None
         self.handled_gameover = False
         self.handled_round_key: tuple[Any, ...] | None = None
 
-    def observe(self, payload: dict[str, Any]) -> MatchResult | None:
+        self.seen_warmup = False
+        self.last_team: str | None = None
+        self.start_handled = False
+
+        self.mvp_baseline_name: str | None = None
+        self.last_mvps: int | None = None
+
+        self.bomb_round_key: tuple[Any, ...] | None = None
+        self.bomb_deadline: float | None = None
+        self.bomb_active = False
+        self.bomb_handled_key: tuple[Any, ...] | None = None
+
+    def observe(self, payload: dict[str, Any]) -> list[MusicEvent]:
         provider = _safe_object(payload.get("provider"))
         timestamp = _optional_int(provider.get("timestamp"))
         if (
@@ -208,12 +339,15 @@ class GameState:
             and self.last_timestamp is not None
             and timestamp < self.last_timestamp
         ):
-            return None
+            return []
         if timestamp is not None:
             self.last_timestamp = timestamp
 
         map_data = _safe_object(payload.get("map"))
-        phase = str(map_data.get("phase", "")).strip().lower()
+        round_data = _safe_object(payload.get("round"))
+        player = _safe_object(payload.get("player"))
+        map_phase = str(map_data.get("phase", "")).strip().lower()
+        round_phase = str(round_data.get("phase", "")).strip().lower()
         identity = (
             str(map_data.get("name", "")).strip(),
             str(map_data.get("mode", "")).strip().lower(),
@@ -222,9 +356,200 @@ class GameState:
             self._reset_for_new_map()
         self.map_identity = identity
 
-        if self.trigger_mode == "round":
-            return self._observe_round(payload, map_data)
+        if map_phase == "warmup":
+            self.seen_warmup = True
 
+        mode = identity[1]
+        team = str(player.get("team", "")).strip().upper()
+        events: list[MusicEvent] = []
+
+        mvp_event = self._observe_mvp(mode, player)
+        if mvp_event is not None:
+            events.append(mvp_event)
+
+        bomb_event = self._observe_bomb(payload, map_data, round_data, mode)
+        if bomb_event is not None:
+            events.append(bomb_event)
+
+        start_event = self._observe_start(
+            map_phase,
+            round_phase,
+            team,
+            mode,
+            _optional_int(map_data.get("round")),
+        )
+        if start_event is not None:
+            events.append(start_event)
+
+        result_event = self._observe_result(payload, map_data, mode)
+        if result_event is not None:
+            events.append(result_event)
+
+        return events
+
+    def poll(self) -> list[MusicEvent]:
+        if (
+            not self.bomb10_enabled
+            or not self.bomb_active
+            or self.bomb_deadline is None
+            or self.bomb_handled_key == self.bomb_round_key
+            or self.clock() < self.bomb_deadline
+        ):
+            return []
+        self.bomb_handled_key = self.bomb_round_key
+        self.bomb_deadline = None
+        return [MusicEvent(event="bomb10")]
+
+    def _observe_mvp(
+        self, mode: str, player: dict[str, Any]
+    ) -> MusicEvent | None:
+        if not self.mvp_enabled or mode in SOLO_MODES:
+            return None
+        name = str(player.get("name", "")).strip()
+        normalized_name = _normalize_player_name(name)
+        match_stats = _safe_object(player.get("match_stats"))
+        mvps = _optional_int(match_stats.get("mvps"))
+        if not normalized_name or mvps is None:
+            return None
+        if (
+            self.mvp_player_names
+            and normalized_name not in self.mvp_player_names
+        ):
+            return None
+        if self.mvp_baseline_name != normalized_name:
+            self.mvp_baseline_name = normalized_name
+            self.last_mvps = mvps
+            return None
+        if self.last_mvps is None or mvps < self.last_mvps:
+            self.last_mvps = mvps
+            return None
+        if mvps == self.last_mvps:
+            return None
+        self.last_mvps = mvps
+        return MusicEvent(event="mvp", mode=mode)
+
+    def _observe_bomb(
+        self,
+        payload: dict[str, Any],
+        map_data: dict[str, Any],
+        round_data: dict[str, Any],
+        mode: str,
+    ) -> MusicEvent | None:
+        if not self.bomb10_enabled or mode in SOLO_MODES:
+            return None
+
+        round_key = self._round_key(payload, map_data)
+        if self.bomb_round_key != round_key:
+            self.bomb_round_key = round_key
+            self.bomb_deadline = None
+            self.bomb_handled_key = None
+
+        bomb_data = _safe_object(payload.get("bomb"))
+        state = str(bomb_data.get("state", "")).strip().lower()
+        round_state = str(round_data.get("bomb", "")).strip().lower()
+        active = False
+        if state in {"planted", "defusing", "defuse"}:
+            active = True
+        elif state in {"carried", "dropped", "defused", "exploded"}:
+            active = False
+        elif round_state == "planted":
+            active = True
+        if str(round_data.get("phase", "")).strip().lower() == "over":
+            active = False
+
+        if not active:
+            self.bomb_active = False
+            self.bomb_deadline = None
+            return None
+
+        self.bomb_active = True
+        if self.bomb_handled_key == round_key:
+            return None
+
+        countdown = _optional_float(bomb_data.get("countdown"))
+        if countdown is None:
+            phase_countdowns = _safe_object(payload.get("phase_countdowns"))
+            phase_name = str(phase_countdowns.get("phase", "")).strip().lower()
+            if phase_name in {"bomb", "planted", "defusing", "defuse"}:
+                countdown = _optional_float(phase_countdowns.get("phase_ends_in"))
+
+        now = self.clock()
+        if countdown is not None:
+            self.bomb_deadline = max(
+                0.0, now + countdown - self.bomb10_lead_seconds
+            )
+        elif self.bomb_deadline is None:
+            self.bomb_deadline = (
+                now + self.bomb10_fallback_plant_seconds
+            )
+
+        if self.bomb_deadline is not None and now >= self.bomb_deadline:
+            self.bomb_handled_key = round_key
+            self.bomb_deadline = None
+            return MusicEvent(event="bomb10", mode=mode)
+        return None
+
+    def _observe_start(
+        self,
+        map_phase: str,
+        round_phase: str,
+        team: str,
+        mode: str,
+        round_number: int | None,
+    ) -> MusicEvent | None:
+        if not self.start_enabled or mode in SOLO_MODES:
+            return None
+
+        if (
+            self.start_handled
+            and self.last_team in {"CT", "T"}
+            and team in {"CT", "T"}
+            and team != self.last_team
+            and map_phase == "live"
+            and round_phase == "freezetime"
+        ):
+            self.last_team = team
+            return MusicEvent(event="start", team=team, mode=mode)
+
+        if self.last_team is None and team in {"CT", "T"}:
+            self.last_team = team
+
+        if self.start_handled or map_phase != "live" or round_phase != "freezetime":
+            return None
+
+        # First round is only trusted when warmup was observed, or when the
+        # round index is exactly 0 (the first round index CS2 reports). Using a
+        # looser range would replay "start" music when the service is launched
+        # mid-map.
+        if self.seen_warmup or round_number == 0:
+            self.start_handled = True
+            self.last_team = team if team in {"CT", "T"} else self.last_team
+            return MusicEvent(event="start", team=team or "", mode=mode)
+        return None
+
+    def _observe_result(
+        self,
+        payload: dict[str, Any],
+        map_data: dict[str, Any],
+        mode: str,
+    ) -> MusicEvent | None:
+        if self.trigger_mode == "round":
+            round_data = _safe_object(payload.get("round"))
+            phase = str(round_data.get("phase", "")).strip().lower()
+            winner = str(round_data.get("win_team", "")).strip().upper()
+            if phase != "over" or winner not in {"CT", "T"}:
+                return None
+
+            key = self._round_result_key(payload, map_data, winner)
+            if self.handled_round_key == key:
+                return None
+            result = determine_round_result(payload)
+            if result is None:
+                return None
+            self.handled_round_key = key
+            return result
+
+        phase = str(map_data.get("phase", "")).strip().lower()
         if phase != "gameover":
             if phase:
                 self.last_phase = phase
@@ -237,45 +562,47 @@ class GameState:
             return None
         if self.handled_gameover:
             return None
-
         result = determine_match_result(payload)
         self.handled_gameover = True
         return result
 
-    def _observe_round(
+    def _round_key(
         self, payload: dict[str, Any], map_data: dict[str, Any]
-    ) -> MatchResult | None:
-        round_data = _safe_object(payload.get("round"))
-        phase = str(round_data.get("phase", "")).strip().lower()
-        winner = str(round_data.get("win_team", "")).strip().upper()
-        if phase != "over" or winner not in {"CT", "T"}:
-            return None
-
+    ) -> tuple[Any, ...]:
         round_number = _optional_int(map_data.get("round"))
-        if round_number is None:
-            score_ct = _score(map_data.get("team_ct"))
-            score_t = _score(map_data.get("team_t"))
-            key: tuple[Any, ...] = (winner, score_ct, score_t)
-        else:
-            key = (round_number, winner)
-        key = (self.map_identity, *key)
-        if self.handled_round_key == key:
-            return None
+        if round_number is not None:
+            return ("round", round_number)
+        return (
+            "score",
+            _score(map_data.get("team_ct")),
+            _score(map_data.get("team_t")),
+        )
 
-        result = determine_round_result(payload)
-        if result is None:
-            return None
-        self.handled_round_key = key
-        return result
+    def _round_result_key(
+        self,
+        payload: dict[str, Any],
+        map_data: dict[str, Any],
+        winner: str,
+    ) -> tuple[Any, ...]:
+        return (self.map_identity, *self._round_key(payload, map_data), winner)
 
     def _reset_for_new_map(self) -> None:
         self.last_phase = None
         self.last_timestamp = None
         self.handled_gameover = False
         self.handled_round_key = None
+        self.seen_warmup = False
+        self.last_team = None
+        self.start_handled = False
+        self.mvp_baseline_name = None
+        self.last_mvps = None
+        self.bomb_round_key = None
+        self.bomb_deadline = None
+        self.bomb_active = False
+        self.bomb_handled_key = None
 
 
-def determine_match_result(payload: dict[str, Any]) -> MatchResult | None:
+def determine_match_result(payload: dict[str, Any]) -> MusicEvent | None:
     map_data = _safe_object(payload.get("map"))
     mode = str(map_data.get("mode", "")).strip().lower()
     if mode in SOLO_MODES:
@@ -296,8 +623,8 @@ def determine_match_result(payload: dict[str, Any]) -> MatchResult | None:
     else:
         outcome = "win" if score_t > score_ct else "lose"
 
-    return MatchResult(
-        outcome=outcome,
+    return MusicEvent(
+        event=outcome,
         team=team,
         score_ct=score_ct,
         score_t=score_t,
@@ -306,7 +633,7 @@ def determine_match_result(payload: dict[str, Any]) -> MatchResult | None:
     )
 
 
-def determine_round_result(payload: dict[str, Any]) -> MatchResult | None:
+def determine_round_result(payload: dict[str, Any]) -> MusicEvent | None:
     map_data = _safe_object(payload.get("map"))
     mode = str(map_data.get("mode", "")).strip().lower()
     if mode in SOLO_MODES:
@@ -327,8 +654,8 @@ def determine_round_result(payload: dict[str, Any]) -> MatchResult | None:
     if score_ct is None or score_t is None:
         return None
 
-    return MatchResult(
-        outcome="win" if winner == team else "lose",
+    return MusicEvent(
+        event="win" if winner == team else "lose",
         team=team,
         score_ct=score_ct,
         score_t=score_t,
@@ -375,22 +702,22 @@ class SequenceStore:
 class MusicLibrary:
     def __init__(
         self,
-        win_dir: Path,
-        lose_dir: Path,
-        win_rule: PlaybackRule,
-        lose_rule: PlaybackRule,
+        directories: dict[str, Path],
+        rules: dict[str, PlaybackRule],
         sequence_store: SequenceStore,
         rng: random.Random | None = None,
     ) -> None:
-        self.directories = {"win": win_dir, "lose": lose_dir}
-        self.rules = {"win": win_rule, "lose": lose_rule}
+        self.directories = dict(directories)
+        self.rules = dict(rules)
         self.sequence_store = sequence_store
         self.rng = rng or random.Random()
-        self._last_random: dict[str, Path | None] = {"win": None, "lose": None}
+        self._last_random: dict[str, Path | None] = {
+            event: None for event in self.directories
+        }
         self._lock = threading.Lock()
 
-    def list_tracks(self, outcome: str) -> list[Path]:
-        directory = self.directories[outcome]
+    def list_tracks(self, event: str) -> list[Path]:
+        directory = self.directories[event]
         if not directory.is_dir():
             return []
         tracks = [
@@ -400,39 +727,39 @@ class MusicLibrary:
         ]
         return sorted(tracks, key=lambda path: path.relative_to(directory).as_posix().casefold())
 
-    def choose(self, outcome: str) -> Path:
-        if outcome not in self.rules:
-            raise ValueError(f"Unknown outcome: {outcome}")
-        rule = self.rules[outcome]
+    def choose(self, event: str) -> Path:
+        if event not in self.rules:
+            raise ValueError(f"Unknown event: {event}")
+        rule = self.rules[event]
         mode = rule.mode.strip().lower()
-        tracks = self.list_tracks(outcome)
+        tracks = self.list_tracks(event)
         if not tracks:
             raise FileNotFoundError(
-                f"No supported audio files in {self.directories[outcome]}"
+                f"No supported audio files in {self.directories[event]}"
             )
 
         with self._lock:
             if mode == "specific":
-                directory = self.directories[outcome]
+                directory = self.directories[event]
                 candidate = (directory / rule.specific).resolve()
                 try:
                     candidate.relative_to(directory.resolve())
                 except ValueError as exc:
                     raise FileNotFoundError(
-                        "The specific track must stay inside its outcome directory."
+                        "The specific track must stay inside its event directory."
                     ) from exc
                 if not candidate.is_file() or candidate.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     raise FileNotFoundError(f"Configured track not found: {candidate}")
                 return candidate
 
             if mode == "sequential":
-                index = self.sequence_store.next_index(outcome, len(tracks))
+                index = self.sequence_store.next_index(event, len(tracks))
                 return tracks[index]
 
             index = self.rng.randrange(len(tracks))
-            if len(tracks) > 1 and tracks[index] == self._last_random[outcome]:
+            if len(tracks) > 1 and tracks[index] == self._last_random[event]:
                 index = (index + 1) % len(tracks)
-            self._last_random[outcome] = tracks[index]
+            self._last_random[event] = tracks[index]
             return tracks[index]
 
 
@@ -550,44 +877,77 @@ class LocalPlayer:
 
 
 class ResultMusicController:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, *, start_scheduler: bool = True) -> None:
         self.config = config
-        self.game_state = GameState(config.trigger_mode)
+        self.game_state = GameState(
+            config.trigger_mode,
+            start_enabled=config.start_enabled,
+            mvp_enabled=config.mvp_enabled,
+            mvp_player_names=config.mvp_player_names,
+            bomb10_enabled=config.bomb10_enabled,
+            bomb10_lead_seconds=config.bomb10_lead_seconds,
+            bomb10_fallback_plant_seconds=config.bomb10_fallback_plant_seconds,
+        )
         self.library = MusicLibrary(
-            config.win_dir,
-            config.lose_dir,
-            config.win_rule,
-            config.lose_rule,
+            config.event_dirs(),
+            config.event_rules(),
             SequenceStore(config.sequence_file),
         )
         self.publisher = CommandPublisher(config.command_file)
         self.local_player = LocalPlayer(config)
         self._event_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._scheduler: threading.Thread | None = None
+        if start_scheduler:
+            self._scheduler = threading.Thread(
+                target=self._scheduler_main,
+                name="bomb10-scheduler",
+                daemon=True,
+            )
+            self._scheduler.start()
 
-    def handle_payload(self, payload: dict[str, Any]) -> MatchResult | None:
-        result = self.game_state.observe(payload)
-        if result is None:
-            return None
+    def handle_payload(self, payload: dict[str, Any]) -> MusicEvent | None:
         with self._event_lock:
-            self._play_outcome(result.outcome)
-        return result
+            return self._play_first(self.game_state.observe(payload))
 
-    def trigger_test(self, outcome: str) -> int:
-        if outcome not in {"win", "lose"}:
-            raise ValueError("outcome must be win or lose")
+    def trigger_test(self, event: str) -> int:
+        if event not in EVENT_KINDS:
+            raise ValueError(f"event must be one of {', '.join(EVENT_KINDS)}")
         with self._event_lock:
-            return self._play_outcome(outcome)
+            return self._play_event(event)
 
-    def _play_outcome(self, outcome: str) -> int:
-        track = self.library.choose(outcome)
-        staged_track = _stage_track(track, self.config.staging_dir, outcome)
+    def close(self) -> None:
+        self._stop_event.set()
+        scheduler = self._scheduler
+        if scheduler is not None and scheduler.is_alive():
+            scheduler.join(timeout=1.0)
+        self.local_player.stop()
+
+    def _scheduler_main(self) -> None:
+        while not self._stop_event.wait(0.05):
+            with self._event_lock:
+                self._play_first(self.game_state.poll())
+
+    def _play_first(self, events: Iterable[MusicEvent]) -> MusicEvent | None:
+        for event in events:
+            try:
+                self._play_event(event.event)
+            except FileNotFoundError as exc:
+                LOG.warning("Skipping %s music: %s", event.event, exc)
+                continue
+            return event
+        return None
+
+    def _play_event(self, event: str) -> int:
+        track = self.library.choose(event)
+        staged_track = _stage_track(track, self.config.staging_dir, event)
         request_id = self.publisher.publish_play(
             staged_track, self.config.mic_gain_db
         )
         self.local_player.start(staged_track, request_id)
         LOG.info(
             "Queued %s music: %s (request=%s, mic_gain=%.1f dB)",
-            outcome,
+            event,
             staged_track,
             request_id,
             self.config.mic_gain_db,
@@ -655,7 +1015,7 @@ def run_server(config: AppConfig, capture_file: Path | None = None) -> int:
                     200,
                     json.dumps(
                         {
-                            "outcome": result.outcome,
+                            "event": result.event,
                             "team": result.team,
                             "score_ct": result.score_ct,
                             "score_t": result.score_t,
@@ -684,7 +1044,7 @@ def run_server(config: AppConfig, capture_file: Path | None = None) -> int:
         "Listening on http://%s:%s and watching %s",
         config.bind_host,
         config.port,
-        ", ".join((str(config.win_dir), str(config.lose_dir))),
+        ", ".join(str(path) for path in config.event_dirs().values()),
     )
     if capture is not None:
         LOG.info("Capturing raw GSI payloads to %s", capture.path)
@@ -694,27 +1054,30 @@ def run_server(config: AppConfig, capture_file: Path | None = None) -> int:
         LOG.info("Stopping.")
     finally:
         server.server_close()
-        controller.local_player.stop()
+        controller.close()
     return 0
 
 
 def check_audio(config: AppConfig) -> int:
     ok = True
-    controller = ResultMusicController(config)
+    controller = ResultMusicController(config, start_scheduler=False)
     print(f"GSI listener: http://{config.bind_host}:{config.port}")
     print(f"trigger mode: {config.trigger_mode}")
     print(f"staging directory: {config.staging_dir}")
-    for outcome in ("win", "lose"):
-        tracks = controller.library.list_tracks(outcome)
+    for event in config.enabled_events():
+        tracks = controller.library.list_tracks(event)
         if tracks:
-            print(f"{outcome}: {len(tracks)} track(s)")
+            print(f"{event}: {len(tracks)} track(s)")
             for track in tracks[:8]:
                 print(f"  {track}")
             if len(tracks) > 8:
                 print(f"  ... and {len(tracks) - 8} more")
         else:
             ok = False
-            print(f"{outcome}: no playable files in {controller.library.directories[outcome]}")
+            print(
+                f"{event}: no playable files in "
+                f"{controller.library.directories[event]}"
+            )
     local_player = config.local_player
     if config.local_enabled:
         if local_player.is_file():
@@ -722,6 +1085,7 @@ def check_audio(config: AppConfig) -> int:
         else:
             ok = False
             print(f"local player missing: {local_player}")
+    controller.close()
     return 0 if ok else 1
 
 
@@ -863,9 +1227,12 @@ def _gsi_config_text(port: int, token: str) -> str:
     }}
     "data"
     {{
+        "bomb" "1"
         "map" "1"
         "map_round_wins" "1"
+        "phase_countdowns" "1"
         "player_id" "1"
+        "player_match_stats" "1"
         "player_state" "1"
         "provider" "1"
         "round" "1"
@@ -943,6 +1310,46 @@ def _safe_object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _boolean(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    raise ConfigError(f"{name} must be a boolean.")
+
+
+def _player_names(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        raise ConfigError("trigger.mvp.player_names must be a string or list.")
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        name = str(item).strip()
+        normalized = _normalize_player_name(name)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(name)
+    return tuple(result)
+
+
+def _normalize_player_name(value: Any) -> str:
+    return str(value).strip().casefold()
+
+
 def _rule(value: Any, name: str) -> PlaybackRule:
     obj = _object(value, name)
     return PlaybackRule(
@@ -975,6 +1382,16 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
+def _optional_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
 def _score(value: Any) -> int | None:
     if not isinstance(value, dict):
         return None
@@ -995,7 +1412,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--check-audio", action="store_true", help="Validate music folders.")
     parser.add_argument("--check-apo", action="store_true", help="Validate APO installation.")
-    parser.add_argument("--test", choices=("win", "lose"), help="Trigger one outcome.")
+    parser.add_argument(
+        "--test",
+        choices=EVENT_KINDS,
+        help="Trigger one music event.",
+    )
     parser.add_argument(
         "--install-gsi",
         action="store_true",
@@ -1044,12 +1465,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         capture_file = _resolve_path(config.path.parent, str(args.capture_gsi))
         return run_server(config, capture_file)
     if args.test:
-        controller = ResultMusicController(config)
+        controller = ResultMusicController(config, start_scheduler=False)
         try:
             controller.trigger_test(args.test)
         except OSError as exc:
             print(f"Test failed: {exc}", file=sys.stderr)
             return 1
+        finally:
+            controller.close()
         return 0
 
     return run_server(config)
