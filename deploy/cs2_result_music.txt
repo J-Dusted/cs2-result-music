@@ -1,0 +1,5 @@
+# Loaded only by the HECATE microphone capture endpoint.
+Device: HECATE G2 GAMING HEADSET
+Stage: capture
+Preamp: 0 dB
+VSTPlugin: Library CS2MicInjector.dll

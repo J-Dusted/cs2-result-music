@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.obj
+
+bin/
+deploy/*.dll
+music/
+work/
+
+config.json
+*.log
+
+.vs/
+.vscode/
+
