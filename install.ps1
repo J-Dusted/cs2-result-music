@@ -2,7 +2,8 @@ param(
     [switch]$SkipGsi,
     [switch]$SkipApoDeviceRegistration,
     [string]$CsgoCfgDirectory,
-    [string]$CaptureDeviceGuid = "{0be43164-1b92-4f6d-8c30-29243a0040ed}"
+    [string]$CaptureDeviceGuid = "{5711cbea-0b90-47f4-85d9-8467e55a2c3a}",
+    [string]$ExpectedDeviceName = "NVIDIA Broadcast"
 )
 
 $ErrorActionPreference = "Stop"
@@ -120,12 +121,12 @@ if (-not $SkipGsi) {
 if (-not $SkipApoDeviceRegistration) {
     & (Join-Path $root "register-apo.ps1") `
         -DeviceGuid $CaptureDeviceGuid `
-        -ExpectedDeviceName "HECATE G2 GAMING HEADSET"
+        -ExpectedDeviceName $ExpectedDeviceName
 }
 
 Write-Host ""
 Write-Host "Installation files copied."
-Write-Host "The HECATE microphone capture endpoint is registered."
+Write-Host "Registered capture endpoint: $ExpectedDeviceName ($CaptureDeviceGuid)"
 Write-Host "Reboot Windows, then start with start.bat."
 Write-Host ""
-Write-Host "TeamSpeak remains set to the HECATE microphone. Do not select a virtual cable."
+Write-Host "Set TeamSpeak input to $ExpectedDeviceName. Do not select a virtual cable."

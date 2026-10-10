@@ -1,9 +1,9 @@
 # CS2 胜负音乐注入实体麦克风
 
 这个项目在 CS2 中根据胜负、地图开局/换边、本机 MVP 和炸弹爆炸倒计时
-播放音乐，并把同一首音乐混入 HECATE G2 GAMING HEADSET 的麦克风采集链。
-TeamSpeak 继续选择原来的 HECATE 麦克风，不需要虚拟声卡，也不会把你和
-朋友的正常通话切走。
+播放音乐，并把同一首音乐混入你实际使用的麦克风采集链（本机当前注册的是
+`NVIDIA Broadcast`）。TeamSpeak 继续选择同一个麦克风，不需要额外的声卡
+跳线，也不会把你和朋友的正常通话切走。
 
 底层结构和 Soundpad 的关键点相同：不是在某个语音软件里做适配，而是在
 麦克风的音频采集链里改变进入语音软件之前的 PCM 信号。这里使用官方
@@ -73,8 +73,9 @@ PowerShell 中执行：
   用户读写权限。
 - 创建 `music/win`、`music/lose`、`music/start`、`music/mvp` 和
   `music/bomb10` 五个曲库目录。
-- 用 Equalizer APO 相同的注册规则，只给 HECATE G2 GAMING HEADSET
-  麦克风的 capture pre-mix 阶段启用 APO；不处理扬声器设备。
+- 用 Equalizer APO 相同的注册规则，只给你指定的麦克风（`install.ps1`
+  的 `-CaptureDeviceGuid` / `-ExpectedDeviceName`，默认 `NVIDIA Broadcast`）
+  的 capture pre-mix 阶段启用 APO；不处理扬声器设备。
 
 完成后按提示重启 Windows。
 
@@ -194,15 +195,15 @@ Python 只写一个原子替换的 `command.txt`。VST2 插件的后台线程每
 `C:\ProgramData\CS2ResultAudio\staging`，再把 staging 中的只读副本路径
 写入 `command.txt`。复制完成后才发布播放命令，不会让插件读到半文件。
 
-TeamSpeak 输入设备仍然选择：
+TeamSpeak 输入设备选择你注册插件的那个麦克风，本机当前是：
 
 ```text
-HECATE G2 GAMING HEADSET Microphone
+麦克风 (NVIDIA Broadcast)
 ```
 
-不要选择 VB-CABLE、VoiceMeeter 或任何虚拟麦克风。为了不让实时音乐
+不要选择 VB-CABLE、VoiceMeeter 这类跳线虚拟声卡。为了不让实时音乐
 被语音软件处理掉，建议关闭 TeamSpeak 的降噪、回声消除和自动增益。
-项目的 APO 片段会在 HECATE 麦克风条件块内把 `Preamp` 重置为 `0 dB`，
+项目的 APO 片段会在指定麦克风的条件块内把 `Preamp` 重置为 `0 dB`，
 避免 Equalizer APO 默认配置里的 `-6 dB` 先压低你的人声。
 
 音量由 `config.json` 里两个互相独立的参数控制，改完重启监听器生效：
