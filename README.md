@@ -1,304 +1,99 @@
-# CS2 胜负音乐注入实体麦克风
+# CS2 对局音乐与 TS 麦克风播放器
 
-这个项目在 CS2 中根据胜负、地图开局/换边、本机 MVP 和炸弹爆炸倒计时
-播放音乐，并把同一首音乐混入你实际使用的麦克风采集链（本机当前注册的是
-`HECATE G2 GAMING HEADSET`）。TeamSpeak 继续选择同一个麦克风，不需要额外
-的声卡跳线，也不会把你和朋友的正常通话切走。
+Windows 64 位中文桌面程序。通过 CS2 GSI 自动播放回合胜利、失败、本人 MVP、
+炸弹最后十秒、热身后开局及换边后开局音乐。真实麦克风先降噪再混入音乐，
+耳机独立监听音乐；说话时朋友端音乐自动降低，耳机音量保持原值。
 
-底层结构和 Soundpad 的关键点相同：不是在某个语音软件里做适配，而是在
-麦克风的音频采集链里改变进入语音软件之前的 PCM 信号。这里使用官方
-Equalizer APO 作为 APO 宿主，自研的 x64 VST2 DLL 负责混音。Equalizer
-APO 会按它自身的标准安装方式设置 Windows 的 `DisableProtectedAudioDG`
-值；不需要驱动测试签名、Secure Boot 改动或 WHQL 签名。
+## 直接运行
 
-## 目录
+解压 `dist/CS2Music-Windows-x64.zip`，运行其中的 `CS2Music/CS2Music.exe`。
+保留整个文件夹，不能只复制 exe。也可运行项目根目录的 `start.cmd`。
+音乐文件由你选择，程序不附带音乐。无需安装 Soundpad 或变声器。
+发行包的 `source/` 文件夹附带源码、自动测试与重建脚本。
 
-```text
-cs2-result-music/
-  cs2_result_music.py        GSI、事件判断、曲目选择、命令发布
-  config.example.json        主配置模板
-  config.json                本地私有配置，已被 Git 忽略
-  start.bat                  手动启动监听器
-  build.ps1 / build_native.cmd
-  bin/
-    CS2MicInjector.dll       64 位 VST2 混音插件
-    CS2LocalPlayback.exe     本机耳机试听播放器
-    CS2MicInjectorTests.exe  原生自测程序
-  deploy/
-    cs2_result_music.txt     Equalizer APO Include 片段
-  music/
-    win/                     胜利音乐
-    lose/                    失败音乐
-    start/                   开局与换边音乐
-    mvp/                     本机 MVP 音乐
-    bomb10/                  炸弹爆炸前 10 秒音乐
-  tests/
-    test_cs2_result_music.py Python 单元测试
-```
+## 首次设置
 
-五个音乐目录互相独立，支持 `.mp3`、`.wav`、`.m4a`、`.aac`、`.flac`。
-实际能否解码取决于 Windows 当前安装的 Media Foundation 解码器。
+1. 从 [VB-Audio 官网](https://vb-audio.com/Cable/)安装 VB-CABLE，安装完成后重启。
+2. 在程序“设备与音量”中选择真实物理麦克风、耳机、**CABLE Input**。
+3. TS 输入选择 **CABLE Output**，输出仍选择耳机。注意虚拟线缆的 Input 是
+   播放设备，Output 才是录音设备。关闭 Windows“侦听此设备”。不要把系统或
+   游戏的默认播放设备改成 CABLE Input，否则朋友也会听到游戏和其他软件声音。
+4. TS 使用按键通话，绑定与程序相同的键，默认 F13。若 TS 无法绑定 F13，
+   在程序中改成另一空闲 F 键，并同步更改 TS；避免与 CS2 或其他软件快捷键冲突。
+   关闭 TS 混合输入上的降噪、语音激活与会破坏音乐的音频处理。程序的 RNNoise
+   只处理真实麦克风，音乐不会经过这一步。输入驱动若也带语音增强，需一并检查。
+5. 点击“启动监听”，点击“TS 热键测试”。5 秒内切到 TS，观察其持续发送 6 秒；
+   再测试 CS2 前台场景。程序和 TS 应保持同一权限级别，优先都以普通权限运行。
+   两种场景都通过后勾选实测确认；未确认时自动发送暂停，不能靠程序界面判断成功。
+6. 六类事件分别选择文件。“耳机试听”仅播放音乐到耳机；正常麦克风语音发送仍按
+   你的已确认设置工作。“双路测试”会把音乐送给朋友，请朋友检查弱音、间奏和你说话时的效果。
+7. “首次配置与 GSI”点击“查找 Steam”，或者选择 CS2 游戏根目录，安装专用配置，
+   然后重启 CS2。目录通常是 `…/Counter-Strike Global Offensive/game/csgo/cfg`。
+   如果安装时系统要求目录写权限，可手动复制 `gamestate_integration_music.cfg`；
+   程序不会覆盖内容不同的同名文件，也不修改其他 GSI 配置。
 
-## 安装
+## 播放规则
 
-### 1. 编译
+- 胜负以本人该回合的队伍为准，不以死亡后观看的队友为准。
+- 胜利最多等待 1.5 秒判断本人 MVP；MVP 替代胜利。迟到的 MVP 可以在下一回合
+  交战前升级播放；换边／开局音乐优先于前回合迟到结算音乐。本人统计缺失时不猜测。
+- 开局与换边音乐在该第一回合的购买阶段播放，不在每个回合开头播放。
+- 结算、开局和换边音乐最迟在下一次正式交战开始时停止；音乐自然结束后不循环。
+  新阶段事件直接替换旧阶段音乐，不排队、不叠加。最终回合音乐在文件结束、离开地图
+  或 GSI 失联时停止。单个文件最长支持 15 分钟。
+- 炸弹计时优先使用有效的 GSI 爆炸倒计时，**拆包倒计时不会当成爆炸倒计时**。
+  实战通常缺少精确值，因此从首次收到下包状态开始估算。默认炸弹总时长 40 秒；
+  正数延迟补偿会提早触发。估算误差可能变化，无法保证恰好最后十秒。
+  中途进入已下包回合、重连、拆除、爆炸、回合结束或 GSI 失联后不继续旧估算。
+- 首次连接只建立状态基线。若你在第一回合购买阶段才启动，程序不会补播开局音乐。
+- 默认正常半场 12 回合、加时半场 3 回合；不同赛制自行调整。换边需同时满足
+  回合边界及本人阵营变化，普通观战对象变化不会触发。
+- “停止音乐”保留正常语音发送；“真实麦克风静音”不阻止音乐；“停止运行”关闭所有
+  音频流及 GSI 服务并释放程序保持的通话键。独立看护进程处理主程序异常退出或卡住。
 
-需要 Visual Studio 2022 Build Tools 的 `v143` C++ 工具集和 Windows
-SDK。进入项目目录后运行：
+## 状态、调音与排错
+
+状态页显示本人身份、回合阶段、炸弹计时来源、麦克风电平、通话键状态及缓冲统计。
+音频设备断开会停止运行并显示原因；重新插入后刷新设备、重新选择并启动。
+启动时少量欠载统计不代表持续故障；运行中持续增长需要检查设备、采样率与负载。
+
+说话漏字时，降低语音电平门限或 RNNoise 置信度门限；环境声太多时反向调整。
+RNNoise 不能消除所有噪声，讲话时仍可能保留键盘和背景声。麦克风增益过大可能触发
+限幅，先从物理设备调低增益。朋友端音乐默认 35%，说话时降低 12 dB。
+
+TS 发送图标不亮：先测通话键绑定／全局热键和权限级别。亮但音乐断续：检查 TS
+以及麦克风驱动的输入增强、频道编码、网络与接收端音量处理。自动按键并不能修复
+网络丢包；以朋友端实际收到的声音验收。频道权限不允许发送时，本程序不能绕过。
+
+源代码运行的设置在 `runtime/settings.json`，发行包在 `%LOCALAPPDATA%/CS2Music/`。
+设置文件有版本与范围校验，写入采用临时文件替换；退出保存最近日志。
+发行包中的 `run-self-check.cmd` 检查 DLL、格式支持和设备枚举，报告保存在同一目录。
+它**不会替代 TS／朋友端测试**，也不会按通话键或启动麦克风。
+
+## 开发与重建
+
+使用 Python 3.12 x64：
 
 ```powershell
+.\setup.ps1
+# 网络较慢时可指定镜像：
+.\setup.ps1 -IndexUrl https://pypi.tuna.tsinghua.edu.cn/simple
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe scripts\soak.py --minutes 30
 .\build.ps1
-.\bin\CS2MicInjectorTests.exe
 ```
 
-`build.ps1` 会生成 x64 DLL、播放器和原生测试程序。原生测试覆盖无请求
-透传、混音、曲目切换、软限幅、损坏路径回退，以及 Media Foundation
-解码一条 WAV。
-
-### 2. 安装 Equalizer APO
-
-安装官方 Equalizer APO 1.4.2 或更新版本。安装完成后，在管理员
-PowerShell 中执行：
-
-```powershell
-.\install.ps1
-```
-
-安装脚本主要做五件事：
-
-- 把 `CS2MicInjector.dll` 放到 `C:\Program Files\EqualizerAPO\VSTPlugins`。
-- 把 `deploy\cs2_result_music.txt` 放到 APO 配置目录，并仅在原
-  `config.txt` 中追加一个带标记的 `Include`，不会覆盖已有 EQ。
-- 创建 `C:\ProgramData\CS2ResultAudio` 并给 Windows 音频服务和当前
-  用户读写权限。
-- 创建 `music/win`、`music/lose`、`music/start`、`music/mvp` 和
-  `music/bomb10` 五个曲库目录。
-- 用 Equalizer APO 相同的注册规则，只给你指定的麦克风（`install.ps1`
-  的 `-CaptureDeviceGuid` / `-ExpectedDeviceName`，默认
-  `HECATE G2 GAMING HEADSET`）
-  的 capture pre-mix 阶段启用 APO；不处理扬声器设备。
-
-完成后按提示重启 Windows。
-
-验证安装：
-
-```powershell
-python .\cs2_result_music.py --check-apo
-```
-
-如果刚重启后没有心跳，这是麦克风端点尚未被应用打开。可先运行：
-
-```powershell
-.\probe-capture.ps1
-```
-
-它会打开默认录音端点 5 秒；随后再执行 `--check-apo`。也可以直接用
-TeamSpeak 占用麦克风并说话几秒。
-
-插件加载后会在 `C:\ProgramData\CS2ResultAudio\status.txt` 周期写入心跳。
-
-### 3. 生成 GSI 配置
-
-将 `config.example.json` 复制为 `config.json`，再把 `gsi.token` 改成
-一个只有你知道的随机字符串：
-
-```json
-{
-  "gsi": {
-    "bind_host": "127.0.0.1",
-    "port": 3001,
-    "token": "替换成随机字符串"
-  }
-}
-```
-
-不要与其他 GSI 配置共用同一个端口。存在多个
-`gamestate_integration_*.cfg` 且它们都指向同一端口时，CS2 可能只采用
-其中一个配置，表现为监听器完全收不到数据。本项目默认使用 `3001`。
-
-然后执行：
-
-```powershell
-python .\cs2_result_music.py --install-gsi
-```
-
-它会在 CS2 的 `game\csgo\cfg` 目录写入
-`gamestate_integration_cs2_result_music.cfg`，不会覆盖你原来的
-`gamestate_integration_fast.cfg`。重启 CS2。
-
-### 4. 放入音乐并启动
-
-按需要把音乐分别放入：
-
-```text
-music/win
-music/lose
-music/start
-music/mvp
-music/bomb10
-```
-
-然后启动：
-
-```powershell
-.\start.bat
-```
-
-这个窗口用于接收 CS2 GSI 并判断事件，必须在 CS2 运行期间保持开启。
-`--test` 只做一次手动音频测试，不会启动持续监听。
-
-默认是手动启动。需要开机自启时运行：
-
-```powershell
-.\install-autostart.ps1
-```
-
-移除开机自启：
-
-```powershell
-.\uninstall-autostart.ps1
-```
-
-## 曲目模式
-
-`config.json` 的 `playback` 下五个事件各自独立配置：
-`win`、`lose`、`start`、`mvp`、`bomb10`。
-
-随机播放：
-
-```json
-{"mode": "random", "specific": ""}
-```
-
-连续两次不会随机到同一首。顺序播放：
-
-```json
-{"mode": "sequential", "specific": ""}
-```
-
-按相对路径的文件名排序循环，下一首索引保存在
-`sequence.json`。指定播放：
-
-```json
-{"mode": "specific", "specific": "champions.mp3"}
-```
-
-`specific` 必须是相对于对应音乐目录的路径，不能逃出该目录。
-
-## 音频和 TeamSpeak
-
-Python 只写一个原子替换的 `command.txt`。VST2 插件的后台线程每
-50 ms 检查它，解码和文件读取都在后台完成，音频线程只复制麦克风
-输入、叠加 PCM 和软限幅。
-
-插件由 `audiodg.exe` 以 `LOCAL SERVICE` 身份加载，通常不能读取用户的
-`Documents` 目录。因此控制器会先把选中的歌曲完整复制到
-`C:\ProgramData\CS2ResultAudio\staging`，再把 staging 中的只读副本路径
-写入 `command.txt`。复制完成后才发布播放命令，不会让插件读到半文件。
-
-TeamSpeak 输入设备选择你注册插件的那个麦克风，本机当前是：
-
-```text
-麦克风 (HECATE G2 GAMING HEADSET)
-```
-
-不要选择 VB-CABLE、VoiceMeeter 这类跳线虚拟声卡。为了不让实时音乐
-被语音软件处理掉，建议关闭 TeamSpeak 的降噪、回声消除和自动增益。
-项目的 APO 片段会在指定麦克风的条件块内把 `Preamp` 重置为 `0 dB`，
-避免 Equalizer APO 默认配置里的 `-6 dB` 先压低你的人声。
-
-音量由 `config.json` 里两个互相独立的参数控制，改完重启监听器生效：
-
-- `audio.mic_gain_db`：混进麦克风的音乐音量，也就是朋友听到的大小。
-- `local.gain_db`：本机耳机里的试听音量，只影响你自己。
-
-dB 是对数刻度，每 `-6 dB` 约等于响度减半，每 `+6 dB` 约等于翻倍。默认
-是 `-6 dB`。朋友嫌吵就往下调，例如 `-12` 或 `-15`；几乎听不到就往上调，
-例如 `-3` 或 `0`。`Preamp` 保持 `0 dB` 不动，改它会把你的说话声也一起
-压低。
-
-本机试听由 `CS2LocalPlayback.exe` 独立播放到默认输出设备，和麦克风
-注入插件使用同一个请求编号。两者会有几毫秒到几十毫秒的启动差异，
-不会改变语音链路。
-
-## 命令
-
-```powershell
-python .\cs2_result_music.py --check-audio
-python .\cs2_result_music.py --check-apo
-python .\cs2_result_music.py --test win
-python .\cs2_result_music.py --test lose
-python .\cs2_result_music.py --test start
-python .\cs2_result_music.py --test mvp
-python .\cs2_result_music.py --test bomb10
-python .\cs2_result_music.py --install-gsi
-python .\cs2_result_music.py --capture-gsi
-```
-
-`--test` 会像真实事件一样写入命令并要求插件播放对应目录的音乐。测试时
-同时让朋友在 TeamSpeak 中确认麦克风端能听到音乐，再确认你说话时没有
-中断。
-
-`--capture-gsi` 会在正常监听的同时，把 CS2 发来的每个原始 JSON 快照
-追加到 `work/gsi-capture.jsonl`。实战一局后可以检查其中的
-`player.team`、`player.name`、`player.match_stats.mvps`、
-`map.team_ct.score`、`map.team_t.score`、`map.phase`、
-`round.win_team`、`bomb.countdown` 和 `phase_countdowns`，确认真实 GSI
-数据与判定逻辑完全一致。
-
-也可以直接双击或在终端运行：
-
-```powershell
-.\start-capture.bat
-```
-
-这个窗口会持续显示监听日志并保留原始 GSI。必须看到
-`Listening on http://127.0.0.1:3001`，否则 CS2 不会把数据发到本项目。
-
-## 触发规则
-
-模板中的 `trigger.mode` 为 `round`，每个回合结算时播放。需要使用
-整张地图结束时播放时，把 `config.json` 改为：
-
-```json
-{"trigger": {"mode": "match"}}
-```
-
-`match` 模式使用 `map.phase` 从非 `gameover` 到 `gameover` 的单次
-跳变触发。
-
-回合模式使用 `round.phase=over` 和 `round.win_team` 判定，胜负按
-`player.team` 与回合胜方比较，并且每个回合最多触发一次。
-
-- 玩家队伍来自 `player.team`，比分来自 `map.team_ct.score` 和
-  `map.team_t.score`。
-- 平局、缺少队伍、缺少比分、死斗和军备竞赛不播放。
-- 下一张地图进入预热或实时阶段后重置事件状态。
-- 同一局即使 GSI 连续发送多个 `gameover` 快照，也只触发一次。
-
-新增事件：
-
-- `start`：同一张地图观察过热身后，第一回合 `freezetime` 播放一次；同一
-  张图内检测到 `player.team` 从 CT/T 切换并在新半场 `freezetime` 时再
-  播放一次。
-- `mvp`：只判断本机玩家。`player.name` 与
-  `trigger.mvp.player_names` 去空格、大小写不敏感匹配；配置为空时只使用
-  本机玩家名称。`player.match_stats.mvps` 增长时播放。
-- `bomb10`：优先使用 `bomb.countdown`，其次使用
-  `phase_countdowns`，字段缺失时从 `round.bomb=planted` 开始计时
-  `trigger.bomb10.fallback_plant_seconds` 秒。默认在剩余 10 秒时播放，
-  每回合最多一次，拆弹或回合结束后取消未触发的回退计时。
-- 同一快照同时满足多个事件时优先级为
-  `mvp`、`bomb10`、`start`、`win/lose`。
-
-## 卸载
-
-管理员 PowerShell 运行：
-
-```powershell
-.\uninstall.ps1
-```
-
-它只移除本项目追加的 Include、APO 配置片段和 DLL。加
-`-RemoveState` 才会同时删除 `C:\ProgramData\CS2ResultAudio` 中的命令和
-顺序索引。
+`requirements-lock.txt` 保存本次构建环境的精确版本。RNNoise 获取脚本校验固定
+Windows wheel 的 SHA256，只提取 DLL 与许可文件；DLL 内含默认模型。
+Qt、PortAudio、libsndfile 等采用动态库单独打包，许可文件随发行包附带。
+
+GSI 服务仅监听 `127.0.0.1:8765`，接口为 `POST /gsi`，请求上限 1 MiB。接收后
+快速返回 204，事件处理与解码独立进行；忙碌队列返回 503。1 秒心跳，超过 5 秒
+没收到状态就停止旧事件，重连重新建立基线。端口占用会明确报错。
+
+## 验收记录
+
+自动测试覆盖事件状态、HTTP、音频混音、降噪 DLL 和按键看护逻辑；
+`scripts/soak.py` 的默认模式加速模拟 30 分钟设备时钟漂移，`--realtime` 可运行
+真实时间的同一模拟。两者均是模拟设备，不能代表物理硬件、TS 或网络验收。
+实机验收清单及当前执行结果见 `VALIDATION.md`。

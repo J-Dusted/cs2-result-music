@@ -1,0 +1,8 @@
+{
+  "package": "pyrnnoise",
+  "version": "0.3.5",
+  "wheel_sha256": "0bba4b8db29cb8d7aa9ac287dad798c05d7c658d9eccbe66a21d5aaaf2b3854a",
+  "source": "https://github.com/pengzhendong/pyrnnoise",
+  "rnnoise_source": "https://github.com/xiph/rnnoise",
+  "model": "default model compiled into DLL; rnnoise_create(NULL)"
+}
