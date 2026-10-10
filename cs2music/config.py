@@ -4,9 +4,10 @@ import json
 import math
 import os
 import sys
-import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from .hotkeys import parse_hotkey
 
 EVENT_LABELS = {
     "victory": "回合胜利", "defeat": "回合失败", "mvp": "本人 MVP",
@@ -34,7 +35,7 @@ class Track:
 
 @dataclass
 class Settings:
-    version: int = 1
+    version: int = 2
     tracks: dict[str, Track] = field(default_factory=lambda: {k: Track() for k in EVENT_LABELS})
     mic_device: str = ""
     headphone_device: str = ""
@@ -55,10 +56,9 @@ class Settings:
     game_dir: str = ""
 
     def validate(self) -> None:
-        if self.version != 1:
+        if self.version != 2:
             raise ValueError("配置文件版本不受支持")
-        if not isinstance(self.ptt_key, str) or not re.fullmatch(r"F([1-9]|1[0-9]|2[0-4])", self.ptt_key):
-            raise ValueError("通话键必须是 F1–F24")
+        self.ptt_key = parse_hotkey(self.ptt_key)[0]
         for track in self.tracks.values():
             if not isinstance(track, Track) or not isinstance(track.path, str) or not isinstance(track.enabled, bool):
                 raise ValueError("音乐文件设置无效")
@@ -87,6 +87,8 @@ class Settings:
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text(encoding="utf-8"))
+        if raw.get("version", 1) == 1:
+            raw["version"] = 2
         tracks = raw.pop("tracks", {})
         s = cls(**raw)
         s.tracks = {k: Track(**tracks.get(k, {})) for k in EVENT_LABELS}

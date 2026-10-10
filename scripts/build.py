@@ -6,12 +6,15 @@ import shutil
 import subprocess
 import sys
 import os
+import hashlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def main():
+    sys.path.insert(0, str(ROOT))
+    from cs2music import __version__
     # PyInstaller replaces its prior output; validate these computed paths first.
     for output in (ROOT / "dist/CS2Music", ROOT / "build/CS2Music", ROOT / "runtime/build-check"):
         if not output.resolve().is_relative_to(ROOT.resolve()):
@@ -72,7 +75,10 @@ def main():
     for file in (ROOT / "assets/rnnoise").iterdir():
         if file.suffix.lower() in (".txt", ".json"):
             shutil.copy2(file, source / "assets/rnnoise" / file.name)
-    archive = shutil.make_archive(str(ROOT / "dist/CS2Music-Windows-x64"), "zip", ROOT / "dist", "CS2Music")
+    archive = shutil.make_archive(str(ROOT / f"dist/CS2Music-{__version__}-Windows-x64"), "zip", ROOT / "dist", "CS2Music")
+    with Path(archive).open("rb") as file:
+        digest = hashlib.file_digest(file, "sha256").hexdigest()
+    Path(archive).with_suffix(".sha256").write_text(f"{digest}  {Path(archive).name}\n", encoding="ascii")
     print(f"Built {archive}")
 
 

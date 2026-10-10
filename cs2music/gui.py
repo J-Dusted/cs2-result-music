@@ -4,18 +4,18 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtGui import QDesktopServices, QFont, QKeySequence
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSpinBox, QTabWidget, QTextEdit, QVBoxLayout, QWidget, QKeySequenceEdit,
 )
 
 from .audio import devices
 from .config import EVENT_LABELS, Settings, data_dir, resource_path
 from .controller import Controller
-from .ptt import KEYS
+from .hotkeys import parse_hotkey
 from .steam import find_game_dirs, install_cfg
 
 
@@ -97,7 +97,7 @@ class Window(QMainWindow):
     def _music_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        tip = QLabel("开局／换边在购买阶段播放；结算音乐最迟在下一回合交战开始时停止。\n本人 MVP 替代胜利；炸弹十秒可能使用估算。试听仅耳机，双路测试会传给朋友。")
+        tip = QLabel("每类事件选择一个文件夹，每次随机播放其中一首；多首时避免连续重复，只读取当前层。\n开局／换边在购买阶段播放；本人 MVP 替代胜利；炸弹十秒可能使用估算。试听仅耳机，双路测试传给朋友。")
         tip.setWordWrap(True)
         layout.addWidget(tip)
         for event, label in EVENT_LABELS.items():
@@ -106,8 +106,8 @@ class Window(QMainWindow):
             enabled = QCheckBox("启用")
             enabled.setChecked(self.s.tracks[event].enabled)
             path = QLineEdit(self.s.tracks[event].path)
-            path.setPlaceholderText("选择 WAV / MP3 / FLAC / OGG 音乐文件")
-            browse = QPushButton("选择")
+            path.setPlaceholderText("选择包含 WAV / MP3 / FLAC / OGG 的文件夹；兼容旧版单曲")
+            browse = QPushButton("选择文件夹")
             browse.clicked.connect(lambda _checked=False, e=event: self.browse(e))
             listen = QPushButton("耳机试听")
             listen.clicked.connect(lambda _checked=False, e=event: self.safe(lambda: self.preview(e, False)))
@@ -157,12 +157,14 @@ class Window(QMainWindow):
             spin.valueChanged.connect(lambda value, n=name, k=scale: setattr(self.s, n, value / k))
             self.spins[name] = spin
             form.addRow(label, spin)
-        self.ptt_key = QComboBox()
-        self.ptt_key.addItems(list(KEYS))
-        self.ptt_key.setCurrentText(self.s.ptt_key)
-        self.ptt_key.currentTextChanged.connect(self.key_changed)
+        self.ptt_key = QKeySequenceEdit(QKeySequence(self.s.ptt_key.replace("Win+", "Meta+")))
+        self.ptt_key.setMaximumSequenceLength(1)
+        self.ptt_key.setFinishingKeyCombinations([])
+        self.ptt_key.setClearButtonEnabled(True)
+        self.ptt_key.keySequenceChanged.connect(self.key_changed)
         self._locked_widgets.append(self.ptt_key)
         form.addRow("TS 按键通话键", self.ptt_key)
+        form.addRow("", QLabel("点击输入框后直接按键，例如 K、Space、Ctrl+Alt+K；在 TS 中绑定同一组合。"))
         layout.addLayout(form)
         tip = QLabel("麦克风按语音门控；无说话时不会把原始环境声直接混入。说话期间仍可能存在残余噪声。\n设备变更请先停止监听。耳机与虚拟输出必须不同；请关闭 Windows 的“侦听此设备”。")
         tip.setWordWrap(True)
@@ -271,7 +273,7 @@ class Window(QMainWindow):
         self.s.headphone_device = self.head.currentData() or ""
         self.s.cable_device = self.cable.currentData() or ""
         self.s.denoise = self.denoise.isChecked()
-        self.s.ptt_key = self.ptt_key.currentText()
+        self.s.ptt_key = parse_hotkey(self.ptt_key.keySequence().toString(QKeySequence.PortableText))[0]
         self.s.game_dir = self.game_path.text()
 
     def save(self):
@@ -298,7 +300,9 @@ class Window(QMainWindow):
             widget.setEnabled(not running)
 
     def browse(self, event):
-        path, _ = QFileDialog.getOpenFileName(self, "选择音乐", "", "音乐 (*.wav *.mp3 *.flac *.ogg);;所有文件 (*)")
+        current = Path(self.rows[event][1].text())
+        initial = str(current if current.is_dir() else current.parent)
+        path = QFileDialog.getExistingDirectory(self, "选择音乐文件夹（随机播放其中一首）", initial)
         if path:
             self.rows[event][1].setText(path)
 
@@ -361,7 +365,7 @@ class Window(QMainWindow):
             self.save()
             log_path = data_dir() / "last-session.log"
             log_path.write_text("\n".join(self.controller.logs), encoding="utf-8")
-        except OSError:
+        except (OSError, ValueError, TypeError):
             pass
         event.accept()
 

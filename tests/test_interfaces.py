@@ -132,6 +132,9 @@ def test_sendinput_abi_without_touching_keyboard(monkeypatch):
     send_key(124, True)
     send_key(124, False)
     assert calls == [(1, 40, 1, 124, 0), (1, 40, 1, 124, 2)]
+    send_key(0x25, True)  # Left arrow uses the extended-key flag.
+    send_key(0x25, False)
+    assert calls[-2:] == [(1, 40, 1, 0x25, 1), (1, 40, 1, 0x25, 3)]
     function.result = 0
     with pytest.raises(OSError):
         send_key(124, True)

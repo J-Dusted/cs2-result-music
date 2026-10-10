@@ -11,9 +11,7 @@ import time
 from pathlib import Path
 
 from .config import data_dir
-
-
-KEYS = {f"F{i}": 0x6F + i for i in range(1, 25)}
+from .hotkeys import EXTENDED_KEYS, parse_hotkey
 
 
 def send_key(vk: int, down: bool):
@@ -39,7 +37,8 @@ def send_key(vk: int, down: bool):
     class Input(ctypes.Structure):
         _fields_ = [("type", wintypes.DWORD), ("u", Payload)]
 
-    packet = Input(1, Payload(ki=Keyboard(vk, 0, 0 if down else 2, 0, 0)))
+    flags = (0 if down else 2) | (1 if vk in EXTENDED_KEYS else 0)
+    packet = Input(1, Payload(ki=Keyboard(vk, 0, flags, 0, 0)))
     api = ctypes.WinDLL("user32", use_last_error=True).SendInput
     api.argtypes = [wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int]
     api.restype = wintypes.UINT
@@ -75,10 +74,11 @@ def watchdog(parent_pid: int, state_file: Path, release=send_key):
                 except (OSError, ValueError):
                     pass
                 if last.get("held"):
-                    try:
-                        release(int(last["vk"]), False)
-                    except OSError:
-                        pass
+                    for vk in reversed(last.get("keys", [last.get("vk")])):
+                        try:
+                            release(int(vk), False)
+                        except (OSError, TypeError, ValueError):
+                            pass
                 # A stale parent is disarmed; parent detects the missing watchdog and stops.
                 break
             time.sleep(0.1)
@@ -90,9 +90,9 @@ def watchdog(parent_pid: int, state_file: Path, release=send_key):
 
 class PTTController:
     def __init__(self, key: str, send=send_key, watch: bool = True):
-        if key not in KEYS:
-            raise ValueError("通话键必须是 F1–F24")
-        self.vk = KEYS[key]
+        self.key, self.keys = parse_hotkey(key)
+        self.vk = self.keys[-1]
+        self._held_keys: list[int] = []
         self.send = send
         self.held = False
         self.last_activity = 0.0
@@ -115,7 +115,8 @@ class PTTController:
 
     def _journal(self, held: bool | None = None):
         if self.file:
-            payload = {"vk": self.vk, "held": self.held if held is None else held,
+            payload = {"vk": self.vk, "keys": list(self.keys) if held else list(self._held_keys),
+                       "held": self.held if held is None else held,
                        "closed": self.closed, "heartbeat": time.time()}
             temp = self.file.with_suffix(".tmp")
             temp.write_text(json.dumps(payload), encoding="utf-8")
@@ -141,8 +142,15 @@ class PTTController:
             if not self.held:
                 # Write intent BEFORE pressing, so a crash between operations is safe.
                 self._journal(held=True)
-                self.send(self.vk, True)
                 self.held = True
+                for vk in self.keys:
+                    # Include the attempted key so an ambiguous SendInput failure is released.
+                    self._held_keys.append(vk)
+                    try:
+                        self.send(vk, True)
+                    except OSError:
+                        self.release()
+                        raise
         elif self.held and now - self.last_activity >= 0.3:
             self.release()
         if now - self.last_journal >= 0.25:
@@ -150,9 +158,17 @@ class PTTController:
 
     def release(self):
         if self.held:
-            self.send(self.vk, False)
-            self.held = False
+            error = None
+            for vk in reversed(self._held_keys[:]):
+                try:
+                    self.send(vk, False)
+                    self._held_keys.remove(vk)
+                except OSError as exc:
+                    error = exc
+            self.held = bool(self._held_keys)
             self._journal()
+            if error:
+                raise error
 
     def close(self):
         if self.closed:

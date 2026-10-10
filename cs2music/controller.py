@@ -9,6 +9,7 @@ from .config import EVENT_LABELS, Settings
 from .events import EventEngine
 from .gsi import GSIServer
 from .ptt import PTTController
+from .music import choose_track
 
 
 class Controller:
@@ -22,6 +23,7 @@ class Controller:
         self.test_start = self.test_end = 0.0
         self.running = False
         self.fault = ""
+        self.last_tracks: dict[str, str] = {}
 
     def log(self, message: str):
         self.logs.append(f"{time.strftime('%H:%M:%S')}  {message}")
@@ -83,19 +85,24 @@ class Controller:
                 self.audio.stop_music()
                 if track.enabled and track.path:
                     try:
-                        self.audio.play(track.path, action.event, transmit=True)
-                        self.log(f"触发：{EVENT_LABELS[action.event]}")
+                        self._play(action.event, transmit=True)
                     except Exception as exc:
                         self.log(str(exc))
                 else:
-                    self.log(f"触发：{EVENT_LABELS[action.event]}（未启用或未设置文件）")
+                    self.log(f"触发：{EVENT_LABELS[action.event]}（未启用或未设置音乐文件夹）")
+
+    def _play(self, event: str, transmit: bool):
+        path = choose_track(self.settings.tracks[event].path, self.last_tracks.get(event, ""))
+        self.audio.play(path, event, transmit)
+        self.last_tracks[event] = path
+        self.log(f"播放：{EVENT_LABELS[event]} · {path}")
 
     def preview(self, event: str, transmit: bool):
         if not self.running:
             raise RuntimeError("请先选择设备并启动监听")
         if transmit and not self.settings.ptt_verified:
             raise RuntimeError("请先完成 TS 热键测试并确认朋友端收到声音")
-        self.audio.play(self.settings.tracks[event].path, event, transmit)
+        self._play(event, transmit)
         self.log(f"{'双路测试' if transmit else '耳机试听'}：{EVENT_LABELS[event]}")
 
     def test_ptt(self):
