@@ -1,5 +1,5 @@
 # Loaded only by the microphone capture endpoint listed below.
-Device: NVIDIA Broadcast
+Device: HECATE G2 GAMING HEADSET
 Stage: capture
 Preamp: 0 dB
 VSTPlugin: Library CS2MicInjector.dll

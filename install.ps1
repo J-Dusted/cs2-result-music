@@ -2,8 +2,8 @@ param(
     [switch]$SkipGsi,
     [switch]$SkipApoDeviceRegistration,
     [string]$CsgoCfgDirectory,
-    [string]$CaptureDeviceGuid = "{5711cbea-0b90-47f4-85d9-8467e55a2c3a}",
-    [string]$ExpectedDeviceName = "NVIDIA Broadcast"
+    [string]$CaptureDeviceGuid = "{0be43164-1b92-4f6d-8c30-29243a0040ed}",
+    [string]$ExpectedDeviceName = "HECATE G2 GAMING HEADSET"
 )
 
 $ErrorActionPreference = "Stop"

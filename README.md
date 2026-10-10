@@ -2,8 +2,8 @@
 
 这个项目在 CS2 中根据胜负、地图开局/换边、本机 MVP 和炸弹爆炸倒计时
 播放音乐，并把同一首音乐混入你实际使用的麦克风采集链（本机当前注册的是
-`NVIDIA Broadcast`）。TeamSpeak 继续选择同一个麦克风，不需要额外的声卡
-跳线，也不会把你和朋友的正常通话切走。
+`HECATE G2 GAMING HEADSET`）。TeamSpeak 继续选择同一个麦克风，不需要额外
+的声卡跳线，也不会把你和朋友的正常通话切走。
 
 底层结构和 Soundpad 的关键点相同：不是在某个语音软件里做适配，而是在
 麦克风的音频采集链里改变进入语音软件之前的 PCM 信号。这里使用官方
@@ -74,7 +74,8 @@ PowerShell 中执行：
 - 创建 `music/win`、`music/lose`、`music/start`、`music/mvp` 和
   `music/bomb10` 五个曲库目录。
 - 用 Equalizer APO 相同的注册规则，只给你指定的麦克风（`install.ps1`
-  的 `-CaptureDeviceGuid` / `-ExpectedDeviceName`，默认 `NVIDIA Broadcast`）
+  的 `-CaptureDeviceGuid` / `-ExpectedDeviceName`，默认
+  `HECATE G2 GAMING HEADSET`）
   的 capture pre-mix 阶段启用 APO；不处理扬声器设备。
 
 完成后按提示重启 Windows。
@@ -198,7 +199,7 @@ Python 只写一个原子替换的 `command.txt`。VST2 插件的后台线程每
 TeamSpeak 输入设备选择你注册插件的那个麦克风，本机当前是：
 
 ```text
-麦克风 (NVIDIA Broadcast)
+麦克风 (HECATE G2 GAMING HEADSET)
 ```
 
 不要选择 VB-CABLE、VoiceMeeter 这类跳线虚拟声卡。为了不让实时音乐
