@@ -95,7 +95,7 @@ def test_settings_migrate_legacy_and_roundtrip_combination(tmp_path):
     path.write_text(json.dumps({"version": 1, "ptt_key": "F13", "ptt_verified": True,
                                 "tracks": {"victory": {"path": "old/song.mp3"}}}))
     settings = Settings.load(path)
-    assert settings.version == 2 and settings.ptt_verified
+    assert settings.version == 3 and settings.ptt_verified
     assert settings.tracks["victory"].path == "old/song.mp3"
     settings.ptt_key = "Alt+Ctrl+K"
     settings.tracks["mvp"].path = "中文/音乐目录"

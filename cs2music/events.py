@@ -12,6 +12,7 @@ class Action:
     kind: str  # play / stop
     event: str = ""
     reason: str = ""
+    when_live: bool = False
 
 
 class EventEngine:
@@ -54,9 +55,9 @@ class EventEngine:
         self.active_event = event
         self.actions.append(Action("play", event))
 
-    def _stop(self, reason: str):
+    def _stop(self, reason: str, when_live: bool = False):
         self.active_event = ""
-        self.actions.append(Action("stop", reason=reason))
+        self.actions.append(Action("stop", reason=reason, when_live=when_live))
 
     def _cancel_bomb(self):
         self.bomb_deadline = None
@@ -177,7 +178,7 @@ class EventEngine:
             self._cancel_bomb()
             self.bomb_state = self._bomb_state(payload)
             self.plant_seen = self.bomb_state == "planted"
-            self._stop("正式交战开始")
+            self._stop("正式交战开始", when_live=True)
 
         if phase == "over" and (previous_phase != "over" or number != previous_number):
             self._cancel_bomb()

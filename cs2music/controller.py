@@ -24,6 +24,7 @@ class Controller:
         self.running = False
         self.fault = ""
         self.last_tracks: dict[str, str] = {}
+        self.playing_event = ""  # Includes a track whose decode is still pending.
 
     def log(self, message: str):
         self.logs.append(f"{time.strftime('%H:%M:%S')}  {message}")
@@ -77,12 +78,18 @@ class Controller:
     def _actions(self, actions):
         for action in actions:
             if action.kind == "stop":
+                if (action.when_live and self.playing_event
+                        and not self.settings.tracks[self.playing_event].stop_on_live):
+                    self.log(f"正式交战开始：{EVENT_LABELS[self.playing_event]}按设置不自动停止")
+                    continue
                 self.audio.stop_music()
+                self.playing_event = ""
                 self.log(action.reason)
             else:
                 track = self.settings.tracks[action.event]
                 # A new phase cancels any old track even when no new file is assigned.
                 self.audio.stop_music()
+                self.playing_event = ""
                 if track.enabled and track.path:
                     try:
                         self._play(action.event, transmit=True)
@@ -94,6 +101,7 @@ class Controller:
     def _play(self, event: str, transmit: bool):
         path = choose_track(self.settings.tracks[event].path, self.last_tracks.get(event, ""))
         self.audio.play(path, event, transmit)
+        self.playing_event = event
         self.last_tracks[event] = path
         self.log(f"播放：{EVENT_LABELS[event]} · {path}")
 
@@ -114,6 +122,7 @@ class Controller:
 
     def stop_music(self):
         self.audio.stop_music()
+        self.playing_event = ""
         self.events.active_event = ""
         self.test_start = self.test_end = 0
         self.log("音乐已停止")
@@ -123,6 +132,7 @@ class Controller:
         self.test_start = self.test_end = 0
         # Stop audio first so no samples continue after PTT is released.
         self.audio.stop()
+        self.playing_event = ""
         if self.ptt:
             try:
                 self.ptt.close()

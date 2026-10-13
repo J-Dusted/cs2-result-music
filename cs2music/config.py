@@ -31,11 +31,13 @@ def data_dir() -> Path:
 class Track:
     enabled: bool = True
     path: str = ""
+    gain: float = 1.0
+    stop_on_live: bool = True
 
 
 @dataclass
 class Settings:
-    version: int = 2
+    version: int = 3
     tracks: dict[str, Track] = field(default_factory=lambda: {k: Track() for k in EVENT_LABELS})
     mic_device: str = ""
     headphone_device: str = ""
@@ -56,12 +58,17 @@ class Settings:
     game_dir: str = ""
 
     def validate(self) -> None:
-        if self.version != 2:
+        if self.version != 3:
             raise ValueError("配置文件版本不受支持")
         self.ptt_key = parse_hotkey(self.ptt_key)[0]
         for track in self.tracks.values():
             if not isinstance(track, Track) or not isinstance(track.path, str) or not isinstance(track.enabled, bool):
                 raise ValueError("音乐文件设置无效")
+            if (isinstance(track.gain, bool) or not isinstance(track.gain, (int, float))
+                    or not math.isfinite(track.gain) or not 0 <= track.gain <= 2):
+                raise ValueError("事件音乐音量必须在 0–200% 之间")
+            if not isinstance(track.stop_on_live, bool):
+                raise ValueError("正式交战停止设置无效")
         for name, low, high in (
             ("headphone_gain", 0, 2), ("music_gain", 0, 2), ("mic_gain", 0, 4),
             ("voice_threshold_db", -80, -5), ("vad_threshold", 0, 1),
@@ -87,8 +94,8 @@ class Settings:
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text(encoding="utf-8"))
-        if raw.get("version", 1) == 1:
-            raw["version"] = 2
+        if raw.get("version", 1) in (1, 2):
+            raw["version"] = 3
         tracks = raw.pop("tracks", {})
         s = cls(**raw)
         s.tracks = {k: Track(**tracks.get(k, {})) for k in EVENT_LABELS}

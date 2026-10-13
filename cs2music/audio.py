@@ -211,6 +211,7 @@ class AudioEngine:
         self._generation = 0
         self._pcm: np.ndarray | None = None
         self._position = 0
+        self._event_gain = 1.0
         self._tail: np.ndarray | None = None
         self._tail_pos = 0
         self._tail_transmit = False
@@ -301,6 +302,8 @@ class AudioEngine:
                     return
                 self._pcm, self._position = pcm, 0
                 self.event, self.send_music, self.music_active = event, transmit, True
+                track = self.s.tracks.get(event)
+                self._event_gain = track.gain if track else 1.0
         except Exception as exc:
             with self._track_lock:
                 if generation == self._generation:
@@ -312,6 +315,7 @@ class AudioEngine:
             # Fade the departing track for 50 ms instead of abruptly zeroing PCM.
             if self._pcm is not None and self._position < len(self._pcm):
                 self._tail = self._pcm[self._position:self._position + 2400].copy()
+                self._tail *= self._event_gain
                 if len(self._tail):
                     self._tail *= np.linspace(1, 0, len(self._tail), dtype=np.float32)[:, None]
                 self._tail_pos = 0
@@ -336,9 +340,15 @@ class AudioEngine:
                     self._tail = None
             if self._pcm is not None:
                 size = min(FRAME, len(self._pcm) - self._position)
-                output[:size] += self._pcm[self._position:self._position + size]
+                track = self.s.tracks.get(self.event)
+                target = track.gain if track else 1.0
+                # Ramp live volume edits over one block to avoid a sample discontinuity.
+                gain = np.linspace(self._event_gain, target, FRAME, dtype=np.float32)[:, None]
+                chunk = self._pcm[self._position:self._position + size] * gain[:size]
+                self._event_gain = target
+                output[:size] += chunk
                 if self.send_music:
-                    shared[:size] += self._pcm[self._position:self._position + size]
+                    shared[:size] += chunk
                 self._position += size
                 if self._position >= len(self._pcm):
                     self._pcm = None

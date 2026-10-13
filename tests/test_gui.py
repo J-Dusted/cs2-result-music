@@ -20,6 +20,11 @@ def test_gui_controls_and_ptt_verification_reset(monkeypatch, tmp_path):
     monkeypatch.setattr("cs2music.gui.QFileDialog.getExistingDirectory", lambda *_args: str(tmp_path))
     window.browse("victory")
     assert settings.tracks["victory"].path == str(tmp_path)
+    volume, stop = window.track_controls["victory"]
+    volume.setValue(45)
+    stop.setChecked(False)
+    assert settings.tracks["victory"].gain == .45 and not settings.tracks["victory"].stop_on_live
+    assert settings.tracks["mvp"].gain == 1 and settings.tracks["mvp"].stop_on_live
     window.spins["music_gain"].setValue(70)
     assert settings.music_gain == .7
     window.close()

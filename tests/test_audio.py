@@ -113,9 +113,11 @@ def test_production_mixer_ducks_only_transmitted_music_and_mute_preserves_music(
     monkeypatch.setattr("cs2music.audio.sd.OutputStream", FakeStream)
     settings = Settings(mic_device="mic", headphone_device="head", cable_device="cable",
                         denoise=False, headphone_gain=1, music_gain=1, mic_gain=1)
+    settings.tracks["victory"].gain = .5
     engine = AudioEngine(settings)
     engine.start()
-    engine._pcm = np.full((96000, 2), .2, np.float32)
+    engine.event = "victory"
+    engine._pcm = np.full((96000, 2), .4, np.float32)
     engine.send_music = engine.music_active = True
     outputs = {"head": [], "cable": []}
     try:

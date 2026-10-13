@@ -31,6 +31,7 @@ class Window(QMainWindow):
         self._locked_widgets = []
         self._last_logs = ""
         self.rows = {}
+        self.track_controls = {}
         self.setFont(QFont("Microsoft YaHei UI", 10))
         root = QWidget()
         layout = QVBoxLayout(root)
@@ -97,12 +98,14 @@ class Window(QMainWindow):
     def _music_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        tip = QLabel("每类事件选择一个文件夹，每次随机播放其中一首；多首时避免连续重复，只读取当前层。\n开局／换边在购买阶段播放；本人 MVP 替代胜利；炸弹十秒可能使用估算。试听仅耳机，双路测试传给朋友。")
+        tip = QLabel("每类事件随机选曲，并独立设置音量和购买阶段结束后是否停止。事件音量同时作用于耳机与朋友端，再叠加各路总音量。\n取消停止后可继续到曲终或被新事件替换；炸弹取消、地图切换和 GSI 失联仍会停止。试听仅耳机，双路测试传给朋友。")
         tip.setWordWrap(True)
         layout.addWidget(tip)
         for event, label in EVENT_LABELS.items():
             box = QGroupBox(label)
-            line = QHBoxLayout(box)
+            box_layout = QVBoxLayout(box)
+            line = QHBoxLayout()
+            box_layout.addLayout(line)
             enabled = QCheckBox("启用")
             enabled.setChecked(self.s.tracks[event].enabled)
             path = QLineEdit(self.s.tracks[event].path)
@@ -118,9 +121,30 @@ class Window(QMainWindow):
             self.rows[event] = (enabled, path)
             enabled.toggled.connect(lambda value, e=event: setattr(self.s.tracks[e], "enabled", value))
             path.textChanged.connect(lambda value, e=event: setattr(self.s.tracks[e], "path", value))
+            options = QHBoxLayout()
+            options.addWidget(QLabel("事件音量"))
+            volume = QDoubleSpinBox()
+            volume.setRange(0, 200)
+            volume.setDecimals(0)
+            volume.setSuffix(" %")
+            volume.setValue(self.s.tracks[event].gain * 100)
+            volume.setMinimumWidth(100)
+            volume.valueChanged.connect(lambda value, e=event: setattr(self.s.tracks[e], "gain", value / 100))
+            options.addWidget(volume)
+            stop = QCheckBox("正式交战开始时停止播放")
+            stop.setChecked(self.s.tracks[event].stop_on_live)
+            stop.setToolTip("购买阶段结束、进入正式交战时停止；取消后播放至曲终或新事件替换。炸弹取消和状态失联仍会停止。")
+            stop.toggled.connect(lambda value, e=event: setattr(self.s.tracks[e], "stop_on_live", value))
+            options.addWidget(stop)
+            options.addStretch()
+            box_layout.addLayout(options)
+            self.track_controls[event] = (volume, stop)
             layout.addWidget(box)
         layout.addStretch()
-        return widget
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(widget)
+        return scroll
 
     def _audio_tab(self):
         widget = QWidget()
