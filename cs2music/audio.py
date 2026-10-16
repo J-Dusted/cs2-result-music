@@ -187,6 +187,21 @@ def resolve_device(label: str, capture: bool) -> Device:
     raise ValueError(f"设备不可用，请重新选择：{label or '未选择设备'}")
 
 
+def output_channels(device: Device) -> int:
+    """Prefer stereo, falling back to the native surround format if required."""
+    channels = min(2, device.outputs)
+    try:
+        sd.check_output_settings(device=device.index, samplerate=device.rate,
+                                 channels=channels, dtype="float32")
+    except sd.PortAudioError as exc:
+        if channels == device.outputs or len(exc.args) < 2 or exc.args[1] != -9998:
+            raise
+        channels = device.outputs
+        sd.check_output_settings(device=device.index, samplerate=device.rate,
+                                 channels=channels, dtype="float32")
+    return channels
+
+
 class AudioEngine:
     """Decode on a worker; mix on a DSP thread; device callbacks only move PCM."""
     def __init__(self, settings: Settings):
@@ -253,17 +268,27 @@ class AudioEngine:
                     self.stream_errors += 1
                 # Cable is master: mixer is paced by its actual sample consumption.
                 data = ring.read(frames, rate, target=2400, correct_drift=not master)
-                outdata[:] = data if channels == 2 else data.mean(axis=1, keepdims=True)
+                if channels == 1:
+                    outdata[:] = data.mean(axis=1, keepdims=True)
+                else:
+                    # Native 5.1/7.1 formats: front left/right carry stereo music.
+                    outdata.fill(0)
+                    outdata[:, :2] = data
             return callback
 
         try:
             self._streams.append(sd.InputStream(device=mic.index, samplerate=mic.rate,
                                                 channels=1, dtype="float32", latency=0.04, callback=capture))
-            for device, ring, master in ((cable, self._cable, True), (head, self._head, False)):
-                channels = min(2, device.outputs)
-                self._streams.append(sd.OutputStream(device=device.index, samplerate=device.rate,
-                                                     channels=channels, dtype="float32", latency=0.04,
-                                                     callback=output(ring, device.rate, channels, master)))
+            for device, ring, master, label in ((cable, self._cable, True, "虚拟输出"),
+                                                 (head, self._head, False, "耳机输出")):
+                try:
+                    channels = output_channels(device)
+                    self._streams.append(sd.OutputStream(device=device.index, samplerate=device.rate,
+                                                         channels=channels, dtype="float32", latency=0.04,
+                                                         callback=output(ring, device.rate, channels, master)))
+                except sd.PortAudioError as exc:
+                    raise ValueError(f"无法打开{label}：{device.label}（{device.rate:g} Hz，"
+                                     f"设备最多 {device.outputs} 声道）：{exc}") from exc
             self._streams[0].start()
             # Prime output buffers and let the capture stream fill its own latency buffer.
             for ring in (self._head, self._cable):

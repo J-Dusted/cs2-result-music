@@ -3,8 +3,9 @@ import time
 import numpy as np
 import pytest
 import soundfile as sf
+import sounddevice as sd
 
-from cs2music.audio import AudioEngine, AudioRing, RNNoise, VoiceGate, load_track, Device
+from cs2music.audio import AudioEngine, AudioRing, RNNoise, VoiceGate, load_track, Device, output_channels
 from cs2music.config import Settings
 
 
@@ -95,11 +96,13 @@ def test_cancelled_decode_does_not_restart_music(tmp_path, monkeypatch):
     engine.close()
 
 
-def test_production_mixer_ducks_only_transmitted_music_and_mute_preserves_music(monkeypatch):
+@pytest.mark.parametrize("head_channels", [1, 2, 8])
+def test_production_mixer_ducks_only_transmitted_music_and_mute_preserves_music(monkeypatch, head_channels):
     streams = []
     class FakeStream:
         def __init__(self, **kwargs):
             self.callback, self.capture = kwargs["callback"], kwargs["device"] == 1
+            self.channels = kwargs["channels"]
             self.active = False
             streams.append(self)
         def start(self): self.active = True
@@ -107,10 +110,14 @@ def test_production_mixer_ducks_only_transmitted_music_and_mute_preserves_music(
         def close(self): self.active = False
     def device(label, capture):
         return Device({"mic": 1, "head": 2, "cable": 3}[label], "CABLE Input" if label == "cable" else label, 1 if capture else 0,
-                      0 if capture else 2, 48000)
+                      0 if capture else (head_channels if label == "head" else 2), 48000)
+    def check(**kwargs):
+        if kwargs["device"] == 2 and kwargs["channels"] != head_channels:
+            raise sd.PortAudioError("Invalid number of channels", -9998)
     monkeypatch.setattr("cs2music.audio.resolve_device", device)
     monkeypatch.setattr("cs2music.audio.sd.InputStream", FakeStream)
     monkeypatch.setattr("cs2music.audio.sd.OutputStream", FakeStream)
+    monkeypatch.setattr("cs2music.audio.sd.check_output_settings", check)
     settings = Settings(mic_device="mic", headphone_device="head", cable_device="cable",
                         denoise=False, headphone_gain=1, music_gain=1, mic_gain=1)
     settings.tracks["victory"].gain = .5
@@ -124,12 +131,14 @@ def test_production_mixer_ducks_only_transmitted_music_and_mute_preserves_music(
         for _ in range(50):
             streams[0].callback(np.full((480, 1), .1, np.float32), 480, None, False)
             for stream, name in ((streams[1], "cable"), (streams[2], "head")):
-                output = np.empty((480, 2), np.float32)
+                output = np.full((480, stream.channels), np.nan, np.float32)
                 stream.callback(output, 480, None, False)
                 outputs[name].append(output)
             time.sleep(.01)
         assert engine.speaking and engine.healthy()
-        assert np.mean(outputs["head"][-1]) == pytest.approx(.2, abs=.01)
+        assert np.mean(outputs["head"][-1][:, :2]) == pytest.approx(.2, abs=.01)
+        if head_channels > 2:
+            assert not outputs["head"][-1][:, 2:].any()
         # ~0.1 voice + 0.2 * 10^(-12/20), while headphones retain 0.2 music.
         assert np.mean(outputs["cable"][-1]) == pytest.approx(.15, abs=.015)
         engine.muted = True
@@ -137,10 +146,57 @@ def test_production_mixer_ducks_only_transmitted_music_and_mute_preserves_music(
             streams[0].callback(np.full((480, 1), .1, np.float32), 480, None, False)
             out = np.empty((480, 2), np.float32)
             streams[1].callback(out, 480, None, False)
-            streams[2].callback(np.empty((480, 2), np.float32), 480, None, False)
+            streams[2].callback(np.empty((480, head_channels), np.float32), 480, None, False)
             time.sleep(.01)
         assert not engine.speaking and engine.transmitting
         assert np.mean(out) > .18  # music continues without voice, ducking has recovered
     finally:
         engine.close()
     assert not any(s.active for s in streams)
+
+
+def test_multichannel_device_prefers_stereo_when_supported(monkeypatch):
+    calls = []
+    monkeypatch.setattr("cs2music.audio.sd.check_output_settings", lambda **kw: calls.append(kw))
+    assert output_channels(Device(2, "headset", 0, 8, 48000)) == 2
+    assert [call["channels"] for call in calls] == [2]
+
+
+@pytest.mark.parametrize("error_code", [-9997, -9985])
+def test_output_format_does_not_retry_unrelated_driver_errors(monkeypatch, error_code):
+    calls = []
+    def check(**kw):
+        calls.append(kw)
+        raise sd.PortAudioError("driver error", error_code)
+    monkeypatch.setattr("cs2music.audio.sd.check_output_settings", check)
+    with pytest.raises(sd.PortAudioError):
+        output_channels(Device(2, "headset", 0, 8, 48000))
+    assert len(calls) == 1
+
+
+def test_output_error_identifies_device_and_cleans_up_opened_streams(monkeypatch):
+    streams = []
+    class Stream:
+        closed = False
+        def __init__(self, **kwargs): streams.append(self)
+        def abort(self): pass
+        def close(self): self.closed = True
+    def device(label, capture):
+        return Device({"mic": 1, "head": 2, "cable": 3}[label],
+                      "CABLE Input" if label == "cable" else "HECATE G5" if label == "head" else label,
+                      1 if capture else 0, 0 if capture else 8 if label == "head" else 2, 48000)
+    def check(**kw):
+        if kw["device"] == 2:
+            raise sd.PortAudioError("Invalid number of channels", -9998)
+    monkeypatch.setattr("cs2music.audio.resolve_device", device)
+    monkeypatch.setattr("cs2music.audio.sd.check_output_settings", check)
+    monkeypatch.setattr("cs2music.audio.sd.InputStream", Stream)
+    monkeypatch.setattr("cs2music.audio.sd.OutputStream", Stream)
+    engine = AudioEngine(Settings(mic_device="mic", headphone_device="head", cable_device="cable", denoise=False))
+    try:
+        with pytest.raises(ValueError, match="耳机输出.*HECATE G5"):
+            engine.start()
+        assert len(streams) == 2 and all(stream.closed for stream in streams)
+        assert not engine.running
+    finally:
+        engine.close()
