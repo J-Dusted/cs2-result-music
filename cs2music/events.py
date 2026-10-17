@@ -32,10 +32,16 @@ class EventEngine:
         self.own_team = ""
         self.round_team = ""
         self.mvps: int | None = None
+        self.current_mvps: int | None = None
+        self.own_stats_source = "missing"
+        self.player_is_self = False
+        self.allplayers_self_present = False
         self.round_mvp_baseline: int | None = None
         self.result_mvp_baseline: int | None = None
         self.seen: set[tuple[int, str]] = set()
-        self.pending_result: tuple[int, str, float] | None = None
+        self.pending_result: tuple[int, str, float | None] | None = None
+        self.result_status = "idle"
+        self.result_reason = ""
         self.result_round: int | None = None
         self.results_handled: set[int] = set()
         self.active_event = ""
@@ -47,13 +53,66 @@ class EventEngine:
         self.side_armed = False
         self.actions: list[Action] = []
 
-    def _play(self, event: str, number: int | None = None):
+    def _play(self, event: str, number: int | None = None, reason: str = "事件触发"):
         key = (self.round_number if number is None else number, event)
         if key in self.seen:
             return
         self.seen.add(key)
+        if event in ("start", "side"):
+            self.cancel_results("新的开局／换边事件")
+        if event in ("victory", "defeat", "mvp"):
+            self.result_status, self.result_reason = event, reason
         self.active_event = event
-        self.actions.append(Action("play", event))
+        self.actions.append(Action("play", event, reason))
+
+    def cancel_results(self, reason: str):
+        waiting = self.pending_result is not None
+        if self.result_round is not None:
+            self.results_handled.add(self.result_round)
+        self.pending_result = None
+        self.result_round = None
+        self.result_mvp_baseline = None
+        self.result_status = "skipped" if waiting else "idle"
+        self.result_reason = reason
+
+    @staticmethod
+    def _mvp_count(player: dict) -> int | None:
+        stats = player.get("match_stats") or {}
+        value = stats.get("mvps") if isinstance(stats, dict) else None
+        return value if type(value) is int and value >= 0 else None
+
+    def _refresh_result_wait(self, now: float):
+        if self.pending_result is None:
+            return
+        number, event, ready_at = self.pending_result
+        if self.result_mvp_baseline is None:
+            ready_at = None
+            self.result_status, self.result_reason = "waiting_baseline", "缺少该回合 MVP 基线，暂不判断"
+        elif self.current_mvps is None or self.current_mvps < self.result_mvp_baseline:
+            ready_at = None
+            self.result_status, self.result_reason = "waiting_self", "本人统计不可用，等待恢复"
+        else:
+            if ready_at is None:
+                ready_at = now + self.RESULT_WAIT
+            self.result_status, self.result_reason = "confirming", "本人统计可用，等待 MVP 确认"
+        self.pending_result = (number, event, ready_at)
+
+    def result_snapshot(self) -> dict:
+        return {
+            "connected": self.connected, "map_phase": self.map_phase,
+            "round_phase": self.round_phase, "round": self.round_number,
+            "own_stats_source": self.own_stats_source,
+            "player_is_self": self.player_is_self,
+            "allplayers_self_present": self.allplayers_self_present,
+            "own_stats_available": self.current_mvps is not None,
+            "current_mvps": self.current_mvps, "remembered_mvps": self.mvps,
+            "round_mvp_baseline": self.round_mvp_baseline,
+            "result_mvp_baseline": self.result_mvp_baseline,
+            "result_round": self.result_round, "status": self.result_status,
+            "reason": self.result_reason,
+            "pending_round": self.pending_result[0] if self.pending_result else None,
+            "confirm_at_monotonic": self.pending_result[2] if self.pending_result else None,
+        }
 
     def _stop(self, reason: str, when_live: bool = False):
         self.active_event = ""
@@ -92,13 +151,21 @@ class EventEngine:
         number = self._integer(game_map.get("round"), -1)
         completed = sum(self._integer((game_map.get(k) or {}).get("score")) for k in ("team_ct", "team_t"))
         local = payload.get("player") or {}
-        if not isinstance(local, dict) or str(local.get("steamid", "")) != steamid:
-            local = (payload.get("allplayers") or {}).get(steamid, {})
-        if not isinstance(local, dict):
+        self.player_is_self = isinstance(local, dict) and str(local.get("steamid", "")) == steamid
+        if not self.player_is_self:
             local = {}
-        team = local.get("team")
-        stats = local.get("match_stats") or {}
-        mvp = self._integer(stats["mvps"]) if "mvps" in stats else None
+        alternate = (payload.get("allplayers") or {}).get(steamid, {})
+        self.allplayers_self_present = isinstance(alternate, dict) and bool(alternate)
+        if not isinstance(alternate, dict):
+            alternate = {}
+        team = local.get("team") or alternate.get("team")
+        mvp = self._mvp_count(local)
+        self.own_stats_source = "player" if mvp is not None else "missing"
+        if mvp is None:
+            mvp = self._mvp_count(alternate)
+            if mvp is not None:
+                self.own_stats_source = "allplayers"
+        self.current_mvps = mvp
         reset = (not self.connected or now - self.last_received > self.STALE_SECONDS
                  or steamid != self.identity or map_name != self.map_name
                  or (number < self.round_number and completed < self.completed)
@@ -117,6 +184,7 @@ class EventEngine:
             self.result_mvp_baseline = None
             self.seen.clear()
             self.pending_result = None
+            self.result_status, self.result_reason = "idle", "建立新的对局状态基线"
             self.result_round = None
             self.results_handled = {number} if phase == "over" else set()
             self.side_armed = False
@@ -144,7 +212,7 @@ class EventEngine:
 
         if not map_name or map_phase in ("warmup", "intermission", "gameover"):
             if map_phase != "gameover":
-                self.pending_result = None
+                self.cancel_results("离开正式回合")
             self._cancel_bomb()
             if map_phase != "gameover" and map_phase != previous_map_phase:
                 self._stop("离开正式回合")
@@ -159,11 +227,15 @@ class EventEngine:
             self.side_armed = True
         if phase == "freezetime" and (previous_phase != phase or number != previous_number):
             self.round_team = self.own_team
-            self.round_mvp_baseline = self.mvps
+            self.round_mvp_baseline = self.current_mvps
             self.bomb_state = ""
             self.plant_seen = False
             self._cancel_bomb()
         if phase == "freezetime" and map_phase == "live":
+            # The previous round's result baseline is already frozen separately.
+            # Stats recovered during buying become the upcoming round's baseline.
+            if self.current_mvps is not None:
+                self.round_mvp_baseline = self.current_mvps
             if self.opening_armed and completed == 0:
                 self.opening_armed = False
                 self._play("start")
@@ -171,10 +243,10 @@ class EventEngine:
                 self.side_armed = False
                 self._play("side")
         if phase == "live" and (previous_phase != "live" or number != previous_number):
-            self.pending_result = None
-            self.result_round = None
+            self.cancel_results("正式交战开始，取消未确认结算")
             self.round_team = self.own_team
-            self.round_mvp_baseline = self.mvps
+            if self.current_mvps is not None or previous_phase != "freezetime":
+                self.round_mvp_baseline = self.current_mvps
             self._cancel_bomb()
             self.bomb_state = self._bomb_state(payload)
             self.plant_seen = self.bomb_state == "planted"
@@ -190,16 +262,17 @@ class EventEngine:
                 self.results_handled.add(number)
                 event = "victory" if win_team == self.round_team else "defeat"
                 if event == "defeat":
-                    self._play("defeat")
-                else:
-                    self.pending_result = (number, event, now + self.RESULT_WAIT)
-        has_mvp = (self.mvps is not None and self.result_mvp_baseline is not None
-                   and self.mvps > self.result_mvp_baseline)
+                    self._play("defeat", reason="回合获胜队伍与本人回合队伍不同")
+                elif (number, "mvp") not in self.seen:
+                    self.pending_result = (number, event, None)
+        self._refresh_result_wait(now)
+        has_mvp = (self.current_mvps is not None and self.result_mvp_baseline is not None
+                   and self.current_mvps > self.result_mvp_baseline)
         if has_mvp and self.result_round is not None and phase in ("over", "freezetime"):
             self.pending_result = None
             # A new-phase start/side track has precedence over the previous round's result.
             if self.active_event not in ("start", "side"):
-                self._play("mvp", self.result_round)
+                self._play("mvp", self.result_round, "本人 MVP 计数超过该回合基线")
 
         if phase == "live" and map_phase == "live":
             self._update_bomb(payload, now)
@@ -247,12 +320,13 @@ class EventEngine:
 
     def _tick(self, now: float) -> list[Action]:
         actions = []
-        if self.pending_result and now >= self.pending_result[2]:
+        if (self.pending_result and self.pending_result[2] is not None
+                and now >= self.pending_result[2]):
             number, event, _ = self.pending_result
             self.pending_result = None
             if self.active_event not in ("start", "side", "mvp"):
                 before = len(self.actions)
-                self._play(event, number)
+                self._play(event, number, "本人统计持续可用，确认窗口内 MVP 未增加")
                 actions.extend(self.actions[before:])
                 del self.actions[before:]
         if self.bomb_deadline is not None:
@@ -273,7 +347,9 @@ class EventEngine:
         self.actions = []
         if self.connected and now - self.last_received > self.STALE_SECONDS:
             self.connected = False
-            self.pending_result = None
+            self.current_mvps = None
+            self.own_stats_source = "missing"
+            self.cancel_results("GSI 超时，取消未确认结算")
             self._cancel_bomb()
             self._stop("GSI 超时，等待重新建立基线")
             return self.actions

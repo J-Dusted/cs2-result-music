@@ -264,7 +264,7 @@ class Window(QMainWindow):
         self.logs = QTextEdit()
         self.logs.setReadOnly(True)
         layout.addWidget(self.logs)
-        logs_path = QLabel(f"设置与日志位置：{data_dir()}")
+        logs_path = QLabel(f"设置与日志位置：{data_dir()}\n结算诊断：gsi-results.jsonl（实时写入）")
         logs_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
         logs_path.setWordWrap(True)
         layout.addWidget(logs_path)
@@ -368,9 +368,14 @@ class Window(QMainWindow):
         verified = "用户已确认" if self.s.ptt_verified else "未实机确认，自动发送暂停"
         self.summary.setText(f"{status} · GSI {gsi} · TS 热键 {verified}" + (f" · {test}" if test else ""))
         stats = audio.stats()
+        result_status = {"idle": "等待结算", "waiting_self": "等待本人 MVP 统计恢复",
+                         "waiting_baseline": "缺少该回合 MVP 基线", "confirming": "等待 MVP 确认",
+                         "victory": "已判定胜利", "defeat": "已判定失败", "mvp": "已判定本人 MVP",
+                         "skipped": "已跳过未确认结算"}[engine.result_status]
         self.details.setText(
             f"本人 SteamID：{engine.identity or '等待数据'}  队伍：{engine.own_team or '未知'}\n"
             f"地图：{engine.map_name or '未知'}  回合阶段：{engine.round_phase or '未知'}\n"
+            f"结算判断：{result_status}  本人统计：{'可用' if engine.current_mvps is not None else '暂缺'}\n"
             f"音乐：{EVENT_LABELS.get(audio.event, '无')}  语音：{'说话中' if audio.speaking else '静音门控'}  电平：{audio.level_db:.1f} dB\n"
             f"炸弹计时来源：{engine.bomb_source}  剩余：{f'{remaining:.1f}s' if remaining is not None else '无'}\n"
             f"通话键：{self.s.ptt_key}  状态：{'保持' if ptt and ptt.held else '释放'}\n"

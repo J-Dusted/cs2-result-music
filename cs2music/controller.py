@@ -10,6 +10,7 @@ from .events import EventEngine
 from .gsi import GSIServer
 from .ptt import PTTController
 from .music import choose_track
+from .result_log import ResultLog
 
 
 class Controller:
@@ -20,6 +21,7 @@ class Controller:
         self.server: GSIServer | None = None
         self.ptt: PTTController | None = None
         self.logs: deque[str] = deque(maxlen=200)
+        self.result_log = ResultLog(warn=self.log)
         self.test_start = self.test_end = 0.0
         self.running = False
         self.fault = ""
@@ -39,6 +41,7 @@ class Controller:
             self.server = GSIServer()
             self.server.start()
             self.events = EventEngine(self.settings)
+            self.result_log.record(self.events, cause="start")
             self.running = True
             self.fault = ""
             self.log("监听已启动：127.0.0.1:8765/gsi")
@@ -62,8 +65,13 @@ class Controller:
                     break
                 # Do not replay queued states after a paused UI or debugger.
                 if now - received <= self.events.STALE_SECONDS:
-                    self._actions(self.events.ingest(message, received))
-            self._actions(self.events.tick(now))
+                    actions = self.events.ingest(message, received)
+                    self.result_log.record(self.events, actions, received=received,
+                                           provider_timestamp=(message.get("provider") or {}).get("timestamp"))
+                    self._actions(actions)
+            actions = self.events.tick(now)
+            self.result_log.record(self.events, actions)
+            self._actions(actions)
             testing = self.test_start <= now < self.test_end
             active = testing or (self.settings.ptt_verified and self.audio.transmitting)
             self.ptt.update(active, now)
@@ -124,12 +132,16 @@ class Controller:
         self.audio.stop_music()
         self.playing_event = ""
         self.events.active_event = ""
+        self.events.cancel_results("手动停止音乐，取消未确认结算")
+        self.result_log.record(self.events, cause="manual_stop")
         self.test_start = self.test_end = 0
         self.log("音乐已停止")
 
     def stop(self):
         self.running = False
         self.test_start = self.test_end = 0
+        self.events.cancel_results("停止监听，取消未确认结算")
+        self.result_log.record(self.events, cause="stop")
         # Stop audio first so no samples continue after PTT is released.
         self.audio.stop()
         self.playing_event = ""
@@ -144,5 +156,8 @@ class Controller:
             self.server = None
 
     def close(self):
-        self.stop()
-        self.audio.close()
+        try:
+            self.stop()
+            self.audio.close()
+        finally:
+            self.result_log.close()
